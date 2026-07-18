@@ -1,0 +1,10 @@
+pandas
+scikit-learn
+nltk
+joblib
+streamlit
+python-telegram-bot==21.1
+python-dotenv
+langdetect
+requests
+httpx
