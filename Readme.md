@@ -1,8 +1,12 @@
+<<<<<<< HEAD
 Markdown# 🛡️ Sentinel-Spam — Hybrid Anti-Fraud & Conversational AI System
 
 Sentinel-Spam is an end-to-end phishing and spam detection ecosystem. The project bridges the gap between classical machine learning and modern generative AI by combining an ultra-fast **Linear SVM classifier (TF-IDF)** with a local **Ollama LLM** for semantic verification, translation, and advanced conversational routing.
 
 ---
+=======
+
+>>>>>>> da7fe480738c8547a8bdf703a990800245445ac5
 
 ## 📌 Prerequisites
 
