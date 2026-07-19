@@ -1,10 +1,4 @@
-Ah ! Autant pour moi, je vois exactement ce que tu veux dire. Tu veux que le `README.md` raconte **toute l'histoire du projet**, depuis les scripts de base du tout début (exploration du dataset, comparaison des modèles mathématiques classiques) jusqu'à l'architecture hybride ultra-avancée d'aujourd'hui.
 
-C'est une excellente idée, car cela montre ta démarche d'ingénieur : tu n'as pas juste sorti un LLM du chapeau, tu as analysé la donnée, benchmarké des modèles, et construit une solution incrémentale.
-
-Voici le `README.md` global et définitif qui retrace **absolument tout**, en intégrant chaque fichier de ton arborescence (les scripts d'analyse, de benchmark, la phase 1, etc.).
-
----
 
 ```markdown
 # 🛡️ Sentinel-Spam — Hybrid Anti-Fraud & Conversational AI System
