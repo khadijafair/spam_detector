@@ -153,3 +153,24 @@ docker run -d -p 8501:8501 spam-detector-app
 ```
 
 ```
+```
+spam_detector
+├─ app.py
+├─ app_dataset.py
+├─ app_spam_ham_data.py
+├─ benchmark_models.py
+├─ config.py
+├─ dataset
+├─ detector_app_interface.py
+├─ Dockerfile
+├─ I18n.py
+├─ inspect_dataset.py
+├─ linear_svm_model.py
+├─ pipeline_phase1.py
+├─ predict.py
+├─ Readme.md
+├─ requirements.txt
+├─ spam_utils.py
+└─ telegram_bot.py
+
+```
