@@ -1,15 +1,19 @@
 """
-detector_app_interface.py — Interface Streamlit v2.
+detector_app_interface.py — Streamlit interface, v3.
 
-Améliorations vs v1 :
-- Score de confiance affiché (pas juste un verdict binaire)
-- Explicabilité : mots les plus influents dans la décision (graphique)
-- Historique de session (multi-analyses dans la même session)
-- Onglet analyse par lot (upload CSV, une colonne de texte)
-- Boutons de feedback pour signaler les erreurs (log JSONL, réutilisable
-  pour ré-entraîner le modèle plus tard)
-- Pipeline NLP importé depuis spam_utils.py (plus de duplication de code
-  avec le bot Telegram — un seul endroit à corriger si le nettoyage change)
+Language design: the interface is centralized in English (consistent with
+the English-trained dataset and the rest of the codebase). If pasted text
+is detected as non-English, it's transparently translated to English via
+Ollama before classification (the translated text is shown in an expander
+for transparency). The UI labels themselves stay English regardless of the
+analyzed text's language -- this keeps the tool simple and consistent,
+unlike the Telegram bot, whose free-form chat mode is bilingual by design.
+
+Other improvements kept from v2:
+- Confidence score + explainability (most influential words)
+- Borderline-score detection -> warning instead of a falsely confident verdict
+- Correction cache from user feedback (👍/👎)
+- Shared NLP pipeline via spam_utils.py (no duplication with the bot)
 """
 import json
 from datetime import datetime, timezone
@@ -25,19 +29,19 @@ from spam_utils import (
 
 st.set_page_config(page_title="Sentinel-Spam", page_icon="🛡️", layout="centered")
 
-FEEDBACK_LOG_PATH = "feedback.jsonl"
+FEEDBACK_LOG_PATH = config.FEEDBACK_LOG_PATH
 
 
 @st.cache_resource
 def get_artifacts():
-    return load_artifacts("best_spam_model.pkl", "tfidf_vectorizer.pkl")
+    return load_artifacts(config.MODEL_PATH, config.VECTORIZER_PATH)
 
 
 try:
     model, vectorizer = get_artifacts()
 except Exception:
-    st.error("⚠️ Fichiers modèle introuvables. Lance d'abord l'entraînement pour générer "
-             "best_spam_model.pkl et tfidf_vectorizer.pkl.")
+    st.error("⚠️ Model files not found. Run the training script first to generate "
+             "best_spam_model.pkl and tfidf_vectorizer.pkl.")
     st.stop()
 
 if "history" not in st.session_state:
@@ -56,23 +60,23 @@ def log_feedback(text, label, correct):
 
 
 st.title("🛡️ Sentinel-Spam")
-st.caption("Analyseur d'e-mails / SMS avec score de confiance et explicabilité")
+st.caption("Email / SMS analyzer with confidence score and explainability")
 
-tab_single, tab_batch, tab_history = st.tabs(["🔍 Analyse simple", "📂 Analyse par lot", "🕒 Historique"])
+tab_single, tab_batch, tab_history = st.tabs(["🔍 Single analysis", "📂 Batch analysis", "🕒 History"])
 
-# ---------------------------------------------------------------- Analyse simple
+# ---------------------------------------------------------------- Single analysis
 with tab_single:
     email_input = st.text_area(
-        "Contenu à analyser :",
+        "Content to analyze:",
         height=220,
-        placeholder="Copiez-collez le texte complet du message ici...",
+        placeholder="Paste the full message text here (any language)...",
     )
 
-    if st.button("Lancer l'analyse", type="primary"):
+    if st.button("Run analysis", type="primary"):
         if not email_input.strip():
-            st.warning("⚠️ Veuillez insérer du texte avant de lancer l'analyse.")
+            st.warning("⚠️ Please enter some text before running the analysis.")
         else:
-            with st.spinner("Analyse en cours..."):
+            with st.spinner("Analyzing..."):
                 corrections = load_corrections(FEEDBACK_LOG_PATH)
                 override_label = corrections.get(email_input.strip())
 
@@ -96,69 +100,79 @@ with tab_single:
 
             st.markdown("---")
             if override_label is not None:
-                st.info("ℹ️ Corrigé suite à un feedback précédent sur ce texte exact.")
+                st.info("ℹ️ Corrected based on previous feedback on this exact text.")
             elif is_borderline(confidence):
-                st.warning("⚠️ Score du modèle peu tranché (proche de 50%) — à vérifier manuellement.")
+                st.warning("⚠️ Model score inconclusive (near 50%) — please double-check manually.")
             if translated_shown:
-                st.caption(f"🌐 Traduit ({lang.upper()}→EN) avant analyse")
-                with st.expander("Voir le texte traduit utilisé pour l'analyse"):
+                st.caption(f"🌐 Translated ({lang.upper()}→EN) before analysis")
+                with st.expander("View the translated text used for analysis"):
                     st.text(translated_shown)
 
             if is_spam:
-                st.error(f"🚨 **SPAM / PHISHING DÉTECTÉ** — confiance {confidence}%")
+                st.error(f"🚨 **SPAM / PHISHING DETECTED** — confidence {confidence}%")
             else:
-                st.success(f"✅ **MESSAGE SAIN (HAM)** — confiance {confidence}%")
+                st.success(f"✅ **LEGITIMATE MESSAGE (HAM)** — confidence {confidence}%")
 
             st.progress(confidence / 100)
 
             if top_words:
-                st.subheader("Mots les plus déterminants")
-                df_words = pd.DataFrame(top_words, columns=["mot", "contribution"])
+                st.subheader("Most influential words")
+                df_words = pd.DataFrame(top_words, columns=["word", "contribution"])
                 df_words["direction"] = df_words["contribution"].apply(
-                    lambda c: "vers SPAM" if c > 0 else "vers HAM"
+                    lambda c: "toward SPAM" if c > 0 else "toward HAM"
                 )
-                st.bar_chart(df_words.set_index("mot")["contribution"])
-                st.caption("Contribution positive = pousse vers SPAM · négative = pousse vers HAM")
+                st.bar_chart(df_words.set_index("word")["contribution"])
+                st.caption("Positive contribution = pushes toward SPAM · negative = pushes toward HAM")
 
             col1, col2 = st.columns(2)
             label = "SPAM" if is_spam else "HAM"
-            if col1.button("👍 Verdict correct"):
+            if col1.button("👍 Correct verdict"):
                 log_feedback(email_input, label, True)
-                st.toast("Merci, feedback enregistré ✅")
-            if col2.button("👎 Verdict erroné"):
+                st.toast("Thanks, feedback logged ✅")
+            if col2.button("👎 Wrong verdict"):
                 log_feedback(email_input, label, False)
-                st.toast("Merci, erreur signalée 📝")
+                st.toast("Thanks, error reported 📝")
 
-# ---------------------------------------------------------------- Analyse par lot
+# ---------------------------------------------------------------- Batch analysis
 with tab_batch:
-    st.write("Charge un CSV avec une colonne de texte à analyser en masse.")
-    uploaded = st.file_uploader("Fichier CSV", type=["csv"])
+    st.write("Upload a CSV with a text column to analyze in bulk.")
+    uploaded = st.file_uploader("CSV file", type=["csv"])
     if uploaded is not None:
         df = pd.read_csv(uploaded)
-        col_name = st.selectbox("Colonne contenant le texte :", df.columns)
-        if st.button("Analyser le fichier"):
-            with st.spinner(f"Analyse de {len(df)} lignes..."):
+        col_name = st.selectbox("Column containing the text:", df.columns)
+        if st.button("Analyze file"):
+            with st.spinner(f"Analyzing {len(df)} rows..."):
                 results = []
                 for text in df[col_name].astype(str):
-                    is_spam, confidence, _ = predict_with_confidence(text, model, vectorizer)
-                    results.append({"verdict": "SPAM" if is_spam else "HAM", "confiance_%": confidence})
+                    lang = detect_language(text)
+                    text_for_model = text
+                    if lang not in ("en", "unknown"):
+                        translated = translate_to_english_sync(text, config.OLLAMA_URL, config.MODEL_LLM)
+                        if translated:
+                            text_for_model = translated
+                    is_spam, confidence, _ = predict_with_confidence(text_for_model, model, vectorizer)
+                    results.append({
+                        "verdict": "SPAM" if is_spam else "HAM",
+                        "confidence_%": confidence,
+                        "detected_lang": lang,
+                    })
                 out_df = pd.concat([df, pd.DataFrame(results)], axis=1)
             st.dataframe(out_df, use_container_width=True)
             st.download_button(
-                "Télécharger les résultats (CSV)",
+                "Download results (CSV)",
                 out_df.to_csv(index=False).encode("utf-8"),
-                "resultats_analyse.csv",
+                "analysis_results.csv",
                 "text/csv",
             )
 
-# ---------------------------------------------------------------- Historique
+# ---------------------------------------------------------------- History
 with tab_history:
     if not st.session_state.history:
-        st.info("Aucune analyse effectuée pour l'instant dans cette session.")
+        st.info("No analysis run yet in this session.")
     else:
         hist_df = pd.DataFrame(st.session_state.history)
         hist_df["verdict"] = hist_df["is_spam"].map({True: "SPAM", False: "HAM"})
         st.dataframe(hist_df[["text", "verdict", "confidence"]], use_container_width=True)
-        if st.button("Vider l'historique"):
+        if st.button("Clear history"):
             st.session_state.history = []
             st.rerun()
