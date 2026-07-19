@@ -50,8 +50,8 @@ from spam_utils import clean_text_advanced
 
 BASE_DIR = Path(__file__).resolve().parent
 
-TEXT_COL_CANDIDATES = ["text", "message", "v2", "email", "content"]
-LABEL_COL_CANDIDATES = ["label", "v1", "class", "category", "spam"]
+TEXT_COL_CANDIDATES = ["clean_text", "text", "message", "v2", "email", "content"]
+LABEL_COL_CANDIDATES = ["label_num", "label", "v1", "class", "category", "spam"]
 
 # Combien de fois dupliquer chaque exemple corrigé, pour lui donner plus de
 # poids face au dataset d'origine (souvent bien plus volumineux).
@@ -130,24 +130,29 @@ def main():
     df = pd.read_csv(dataset_path, encoding="latin-1", encoding_errors="ignore")
     text_col, label_col = autodetect_columns(df, args.text_col, args.label_col)
     print(f"📄 Dataset d'origine : {len(df)} lignes (colonnes détectées : text='{text_col}', label='{label_col}')")
+    print(f"   ⚠️  Le texte de '{text_col}' est traité comme DÉJÀ nettoyé (pas de re-nettoyage appliqué).")
 
-    texts = df[text_col].astype(str).tolist()
-    labels = [normalize_label(v) for v in df[label_col]]
+    dataset_texts_clean = df[text_col].astype(str).tolist()
+    dataset_labels = [normalize_label(v) for v in df[label_col]]
 
-    # 3. Corrections issues du feedback
+    # 3. Corrections issues du feedback (celles-là sont du texte BRUT, tel que
+    #    tapé par l'utilisateur -> il faut leur appliquer le même nettoyage
+    #    que la production pour qu'elles soient comparables au dataset).
     corrections = load_feedback_corrections(config.FEEDBACK_LOG_PATH)
     print(f"🔧 {len(corrections)} correction(s) trouvée(s) dans {config.FEEDBACK_LOG_PATH}")
     if not corrections:
         print("Rien à ré-entraîner (aucune correction en attente). Fin.")
         return
 
-    for text, label in corrections:
-        texts.extend([text] * CORRECTION_OVERSAMPLE)
-        labels.extend([label] * CORRECTION_OVERSAMPLE)
+    print("🧹 Nettoyage des textes de correction (pipeline identique à la production)...")
+    correction_texts_clean, correction_labels = [], []
+    for raw_text, label in corrections:
+        cleaned = clean_text_advanced(raw_text)
+        correction_texts_clean.extend([cleaned] * CORRECTION_OVERSAMPLE)
+        correction_labels.extend([label] * CORRECTION_OVERSAMPLE)
 
-    # 4. Nettoyage (même pipeline que la production, via spam_utils partagé)
-    print("🧹 Nettoyage du texte (pipeline identique à la production)...")
-    cleaned = [clean_text_advanced(t) for t in texts]
+    cleaned = dataset_texts_clean + correction_texts_clean
+    labels = dataset_labels + correction_labels
 
     X_train, X_test, y_train, y_test = train_test_split(
         cleaned, labels, test_size=0.2, random_state=42, stratify=labels

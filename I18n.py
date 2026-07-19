@@ -82,8 +82,8 @@ STRINGS = {
 SUPPORTED_VERDICT_LANGS = ("en", "fr")
 
 
-def t(lang: str, key: str, **kwargs) -> str:
-    """Retourne la chaîne traduite pour `lang` (retombe sur 'en' si non supportée)."""
-    lang = lang if lang in STRINGS else "en"
-    template = STRINGS[lang].get(key, STRINGS["en"].get(key, key))
+def t(ui_lang: str, key: str, **kwargs) -> str:
+    """Retourne la chaîne traduite pour `ui_lang` (retombe sur 'en' si non supportée)."""
+    ui_lang = ui_lang if ui_lang in STRINGS else "en"
+    template = STRINGS[ui_lang].get(key, STRINGS["en"].get(key, key))
     return template.format(**kwargs) if kwargs else template
