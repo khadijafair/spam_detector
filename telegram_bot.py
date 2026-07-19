@@ -1,19 +1,26 @@
 """
-telegram_bot.py — Bot hybride anti-fraude, v2.
+telegram_bot.py — Bot hybride anti-fraude, v3.
 
-Principales améliorations vs la v1 :
-- Plus de token en dur (voir config.py / .env)
-- Appels Ollama en async (httpx) pour ne pas bloquer le bot pendant qu'il répond
-  à d'autres utilisateurs
-- Pré-routage rapide par heuristique (regex/mots-clés) AVANT d'appeler le LLM :
-  on n'invoque le LLM que pour les cas ambigus, ce qui réduit fortement
-  la latence moyenne et la dépendance à un LLM 3B pas toujours fiable pour
-  respecter un format de sortie strict
-- Mémoire de conversation courte (derniers échanges) pour un mode "chat" plus naturel
-- Score de confiance + mots les plus influents affichés à l'utilisateur (explicabilité)
-- Boutons de feedback (👍/👎) pour logger les erreurs de classification et
-  constituer un jeu de données de ré-entraînement
-- Logging structuré au lieu de print()
+Changements v3 (langue) :
+- Les messages système / verdicts sont pilotés par i18n.py : le verdict
+  d'analyse s'affiche dans la langue DU MESSAGE ANALYSÉ (en/fr supportés,
+  fallback anglais pour les autres langues détectées).
+- Le mode "chat" ne dépend plus d'un prompt figé en français : Ollama
+  répond nativement dans la langue utilisée par la personne (EN, FR, ou
+  toute autre langue qu'il maîtrise), sans template imposé.
+- /start, /help, /stats s'adaptent à la langue Telegram du client si
+  disponible (fallback anglais).
+
+Améliorations précédentes conservées :
+- Token via config.py / .env (jamais en dur)
+- Appels Ollama en async (httpx)
+- Pré-routage rapide par heuristique avant d'appeler le LLM
+- Traduction automatique vers l'anglais avant classification SVM (dataset
+  d'entraînement anglais), détection de langue via langdetect
+- Score de confiance + explicabilité (mots les plus influents)
+- Détection de score "borderline" -> second avis LLM
+- Cache de corrections basé sur le feedback 👍/👎
+- Logging structuré
 """
 import json
 import logging
@@ -27,10 +34,12 @@ from telegram.ext import (
     filters, ContextTypes,
 )
 
-import config
-from spam_utils import (
+import core.config as config
+import core.i18n
+from core.spam_utils import (
     load_artifacts, predict_with_confidence, explain_prediction,
     is_borderline, load_corrections, detect_language, TRANSLATE_PROMPT_TEMPLATE,
+    load_calibrator,
 )
 
 logging.basicConfig(
@@ -40,32 +49,40 @@ logging.basicConfig(
 logger = logging.getLogger("sentinel-spam-bot")
 
 model_svm, vectorizer = load_artifacts(config.MODEL_PATH, config.VECTORIZER_PATH)
+confidence_calibrator = load_calibrator(config.CALIBRATOR_PATH)
+if confidence_calibrator is None:
+    logger.warning(
+        "No confidence calibrator found at %s -- confidence scores use a rough "
+        "approximation until you run retrain_from_feedback.py once.",
+        config.CALIBRATOR_PATH,
+    )
 
-# Mots-clés qui trahissent quasi-certainement une demande d'analyse plutôt qu'un bavardage.
-# Ça évite d'appeler le LLM pour trancher dans les cas évidents.
+# Mots-clés (bilingues) qui trahissent quasi-certainement une demande d'analyse
+# plutôt qu'un bavardage. Ça évite d'appeler le LLM pour trancher les cas évidents.
 ANALYSIS_HINTS = (
     "http://", "https://", "www.", "@", "urgent", "gagné", "gagne", "félicitation",
     "cliquez", "cliquer", "compte bloqué", "vérifiez votre", "code promo",
     "carte bancaire", "virement", "mot de passe", "gratuit", "offre limitée",
+    "winner", "you won", "click here", "verify your account", "bank account",
+    "free gift", "limited offer", "password", "wire transfer",
 )
 # Longueur en dessous de laquelle un message SANS indice de fraude explicite
-# est traité comme du chat par défaut. Un phishing/spam sans lien, sans
-# urgence, sans mot-clé financier tient rarement en moins de 8 mots.
+# est traité comme du chat par défaut.
 CHAT_DEFAULT_WORD_LIMIT = 8
 
 
 def route_heuristic(text: str) -> str | None:
-    """Retourne 'ANALYSE', 'CHAT', ou None si vraiment ambigu (auquel cas on demande au LLM)."""
+    """Retourne 'ANALYSE', 'CHAT', ou None si vraiment ambigu (le LLM tranche alors)."""
     words = text.split()
     lower = text.lower()
 
     if len(words) >= config.SHORT_MSG_WORD_THRESHOLD:
-        return "ANALYSE"  # un texte long est presque toujours un mail/SMS à analyser
+        return "ANALYSE"
     if any(h in lower for h in ANALYSIS_HINTS):
-        return "ANALYSE"  # indice de fraude explicite, peu importe la longueur
+        return "ANALYSE"
     if len(words) <= CHAT_DEFAULT_WORD_LIMIT:
-        return "CHAT"  # court + aucun indice suspect -> conversation par défaut
-    return None  # zone grise (longueur moyenne, pas d'indice net) : le LLM tranche
+        return "CHAT"
+    return None
 
 
 async def ask_ollama(prompt: str, timeout: float = 30.0) -> str | None:
@@ -76,7 +93,7 @@ async def ask_ollama(prompt: str, timeout: float = 30.0) -> str | None:
             resp.raise_for_status()
             return resp.json().get("response", "").strip()
     except Exception as e:
-        logger.error("Erreur Ollama: %s", e)
+        logger.error("Ollama error: %s", e)
         return None
 
 
@@ -92,37 +109,30 @@ def log_feedback(user_id: int, text: str, predicted_label: str, correct: bool):
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+def telegram_ui_lang(update: Update) -> str:
+    """Langue pour les commandes fixes (/start, /help, /stats) : suit la langue
+    Telegram du client si dispo (en/fr), sinon anglais par défaut."""
+    code = (update.effective_user.language_code or "en").split("-")[0].lower()
+    return code if code in i18n.SUPPORTED_VERDICT_LANGS else "en"
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault("history", [])
     context.user_data.setdefault("stats", {"analysed": 0, "spam": 0})
-    await update.message.reply_text(
-        "🛡️ *Sentinel-Spam — Système Hybride Anti-Fraude*\n\n"
-        "Discute normalement avec moi, ou colle un message/SMS/e-mail suspect "
-        "et je te dis s'il s'agit d'une fraude, avec un score de confiance et "
-        "les indices qui ont motivé la décision.\n\n"
-        "Commandes : /help /stats",
-        parse_mode="Markdown",
-    )
+    lang = telegram_ui_lang(update)
+    await update.message.reply_text(i18n.t(lang, "start_message"), parse_mode="Markdown")
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "ℹ️ *Aide*\n"
-        "- Envoie un message normal → je discute avec toi.\n"
-        "- Envoie un texte suspect (mail, SMS, lien) → j'analyse et te donne un verdict.\n"
-        "- Après un verdict, utilise 👍/👎 pour me dire si j'ai eu raison : "
-        "ça alimente un journal utilisable pour ré-entraîner le modèle.\n"
-        "/stats — voir tes statistiques d'utilisation",
-        parse_mode="Markdown",
-    )
+    lang = telegram_ui_lang(update)
+    await update.message.reply_text(i18n.t(lang, "help_message"), parse_mode="Markdown")
 
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = telegram_ui_lang(update)
     stats = context.user_data.get("stats", {"analysed": 0, "spam": 0})
     await update.message.reply_text(
-        f"📊 *Tes statistiques*\n"
-        f"Messages analysés : {stats['analysed']}\n"
-        f"Spams détectés : {stats['spam']}",
+        i18n.t(lang, "stats_message", analysed=stats["analysed"], spam=stats["spam"]),
         parse_mode="Markdown",
     )
 
@@ -137,80 +147,77 @@ async def orchestrateur_intelligent(update: Update, context: ContextTypes.DEFAUL
     decision = route_heuristic(user_text)
 
     if decision is None:
-        # Cas ambigu seulement : on sollicite le LLM, avec un peu d'historique
-        # pour un routage plus contextuel.
         recent = context.user_data["history"][-4:]
-        history_block = "\n".join(f"{r}: {t}" for r, t in recent)
+        history_block = "\n".join(f"{role}: {txt}" for role, txt in recent)
         routing_prompt = (
-            "Tu es le routeur d'un bot de sécurité. Réponds uniquement par le mot "
-            "ANALYSE si le message est un e-mail/SMS/lien suspect à analyser, "
-            "ou par le mot CHAT si c'est une discussion normale. Un seul mot, rien d'autre.\n\n"
-            f"Historique récent :\n{history_block}\n\n"
-            f"Message : \"{user_text}\""
+            "You are the router of a security bot. Reply with a single word: "
+            "ANALYSE if the message is a suspicious email/SMS/link to analyse, "
+            "or CHAT if it's normal conversation. One word only, nothing else.\n\n"
+            f"Recent history:\n{history_block}\n\n"
+            f"Message: \"{user_text}\""
         )
         verdict = await ask_ollama(routing_prompt, timeout=15.0)
-        # Si le LLM ne répond pas / répond de façon inexploitable, on retombe sur CHAT :
-        # une fausse analyse (faux positif spam) est plus gênante pour l'utilisateur
-        # qu'une réponse de chat un peu trop générique.
+        # Fallback CHAT (pas ANALYSE) : un faux positif "spam" gêne plus
+        # l'utilisateur qu'une réponse de chat un peu générique.
         decision = "ANALYSE" if verdict and "ANALYSE" in verdict.upper() else "CHAT"
 
     context.user_data["history"].append(("user", user_text))
 
     if decision == "CHAT":
         chat_prompt = (
-            "Tu es un assistant francophone amical et concis, intégré à un bot "
-            "anti-fraude. Réponds en 1 à 3 phrases maximum.\n\n"
-            f"Message de l'utilisateur : \"{user_text}\""
+            "You are a friendly, concise assistant embedded in an anti-fraud bot. "
+            "Reply in the SAME LANGUAGE the user just wrote in (English, French, "
+            "or whichever language they used). Keep it to 1-3 sentences.\n\n"
+            f"User message: \"{user_text}\""
         )
         reponse = await ask_ollama(chat_prompt) or (
-            "Je suis là ! Envoie-moi un message suspect si tu veux que je l'analyse."
+            "I'm here! Send me a suspicious message if you'd like me to analyse it."
         )
         context.user_data["history"].append(("assistant", reponse))
         await update.message.reply_text(reponse)
         return
 
     # --- Branche analyse ---
-    status_msg = await update.message.reply_text("🔍 Analyse en cours...")
+    # Langue détectée du message : pilote à la fois la traduction pour le SVM
+    # ET la langue d'affichage du verdict (parité UX avec le contenu analysé).
+    lang = detect_language(user_text)
+    display_lang = lang if lang in i18n.SUPPORTED_VERDICT_LANGS else "en"
 
-    # 1. Cache de corrections : un texte déjà signalé comme mal classé n'est
-    #    pas re-signalé de la même façon (filet de sécurité, pas un ré-entraînement).
+    status_msg = await update.message.reply_text(i18n.t(display_lang, "analysing"))
+
     corrections = load_corrections(config.FEEDBACK_LOG_PATH)
     override_label = corrections.get(user_text.strip())
 
-    # Le modèle SVM a été entraîné sur un dataset anglais : un texte dans une
-    # autre langue est traduit avant classification, sinon le score est peu fiable
-    # (signal quasi nul -> confiance proche de 50%, cf. l'exemple du mail en français).
-    lang = detect_language(user_text)
+    # Le modèle SVM a été entraîné sur un dataset anglais : on traduit avant
+    # classification si nécessaire (sinon signal quasi nul -> score ~50%).
     text_for_model = user_text
     translation_note = ""
     if lang not in ("en", "unknown"):
         translated = await ask_ollama(TRANSLATE_PROMPT_TEMPLATE.format(text=user_text), timeout=25.0)
         if translated:
             text_for_model = translated
-            translation_note = f"\n\n_🌐 Traduit automatiquement ({lang.upper()}→EN) avant analyse._"
+            translation_note = "\n\n_" + i18n.t(display_lang, "translated_note", lang=lang.upper()) + "_"
         else:
-            translation_note = "\n\n_⚠️ Traduction indisponible, analyse effectuée sur le texte original (moins fiable)._"
+            translation_note = "\n\n_" + i18n.t(display_lang, "translation_unavailable") + "_"
 
-    is_spam, confidence, score = predict_with_confidence(text_for_model, model_svm, vectorizer)
+    is_spam, confidence, score = predict_with_confidence(text_for_model, model_svm, vectorizer, confidence_calibrator)
     top_words = explain_prediction(text_for_model, model_svm, vectorizer, top_n=5)
     uncertain = is_borderline(confidence)
 
     if override_label is not None:
         is_spam = override_label == "SPAM"
-        note = "\n\n_ℹ️ Corrigé suite à un feedback précédent sur ce texte exact._"
+        note = "\n\n_" + i18n.t(display_lang, "correction_note") + "_"
     elif uncertain:
-        # Score trop proche de 50% pour être fiable : on demande un second avis au LLM
-        # plutôt que d'afficher un verdict SVM peu fiable avec une fausse assurance.
         verify_prompt = (
-            "Ce message est-il une tentative de phishing/arnaque, ou un message "
-            "légitime (ex: email professionnel, mail RH, conversation normale) ? "
-            "Réponds uniquement par SPAM ou HAM.\n\n"
-            f"Message : \"{user_text}\""
+            "Is this message a phishing/scam attempt, or a legitimate message "
+            "(e.g. professional email, HR email, normal conversation)? "
+            "Reply with only SPAM or HAM.\n\n"
+            f"Message: \"{user_text}\""
         )
         llm_verdict = await ask_ollama(verify_prompt, timeout=20.0)
         if llm_verdict:
             is_spam = "SPAM" in llm_verdict.upper() and "HAM" not in llm_verdict.upper()
-        note = "\n\n_⚠️ Score du modèle peu tranché (proche de 50%) — vérifié par IA sémantique._" + translation_note
+        note = "\n\n_" + i18n.t(display_lang, "borderline_note") + "_" + translation_note
     else:
         note = translation_note
 
@@ -220,27 +227,32 @@ async def orchestrateur_intelligent(update: Update, context: ContextTypes.DEFAUL
 
     indices = "\n".join(
         f"  • `{w}` ({'+' if c > 0 else ''}{c:.2f})" for w, c in top_words
-    ) or "  • (aucun indice lexical significatif isolé)"
+    ) or f"  • {i18n.t(display_lang, 'no_indicators')}"
+
+    header = i18n.t(display_lang, "spam_header" if is_spam else "ham_header")
+    conf_label = i18n.t(display_lang, "confidence_label")
+    ind_label = i18n.t(display_lang, "indicators_label")
 
     if is_spam:
         reponse = (
-            f"🚨 *VERDICT : PHISHING / SPAM*\n"
-            f"Confiance modèle : *{confidence}%*\n\n"
-            f"Indices les plus déterminants :\n{indices}\n\n"
-            f"➡️ Ne cliquez sur aucun lien, ne fournissez aucune donnée.{note}"
+            f"{header}\n"
+            f"{conf_label}: *{confidence}%*\n\n"
+            f"{ind_label}:\n{indices}\n\n"
+            f"{i18n.t(display_lang, 'recommendation')}{note}"
         )
     else:
         reponse = (
-            f"✅ *VERDICT : MESSAGE SAIN (HAM)*\n"
-            f"Confiance modèle : *{confidence}%*\n\n"
-            f"Indices les plus déterminants :\n{indices}{note}"
+            f"{header}\n"
+            f"{conf_label}: *{confidence}%*\n\n"
+            f"{ind_label}:\n{indices}{note}"
         )
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("👍 Correct", callback_data=f"fb:1:{int(is_spam)}"),
-        InlineKeyboardButton("👎 Erreur", callback_data=f"fb:0:{int(is_spam)}"),
+        InlineKeyboardButton(i18n.t(display_lang, "correct_button"), callback_data=f"fb:1:{int(is_spam)}"),
+        InlineKeyboardButton(i18n.t(display_lang, "wrong_button"), callback_data=f"fb:0:{int(is_spam)}"),
     ]])
     context.user_data["last_analysed_text"] = user_text
+    context.user_data["last_display_lang"] = display_lang
     await status_msg.edit_text(reponse, parse_mode="Markdown", reply_markup=keyboard)
 
 
@@ -249,20 +261,36 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     _, correct_flag, predicted_spam = query.data.split(":")
     text = context.user_data.get("last_analysed_text", "")
+    lang = context.user_data.get("last_display_lang", "en")
     label = "SPAM" if predicted_spam == "1" else "HAM"
     log_feedback(update.effective_user.id, text, label, correct_flag == "1")
-    suffix = "\n\n_Merci, feedback enregistré ✅_" if correct_flag == "1" else "\n\n_Merci, erreur signalée 📝_"
+    key = "feedback_logged" if correct_flag == "1" else "feedback_wrong"
+    suffix = "\n\n_" + i18n.t(lang, key) + "_"
     try:
         await query.edit_message_text(query.message.text_markdown + suffix, parse_mode="Markdown")
     except Exception:
         pass
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Filet de sécurité global : loggue l'erreur ET informe l'utilisateur au lieu
+    de le laisser sans réponse (ce qui s'est produit avec l'AttributeError i18n)."""
+    logger.error("Unhandled exception while processing update: %s", context.error, exc_info=context.error)
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "⚠️ Something went wrong while processing your message. Please try again "
+                "in a moment. / Une erreur est survenue, réessaie dans un instant."
+            )
+        except Exception:
+            pass
+
+
 def main():
     if not config.TELEGRAM_TOKEN:
         raise RuntimeError(
-            "TELEGRAM_TOKEN manquant. Crée un fichier .env (voir .env.example) "
-            "et NE COMMIT JAMAIS ce fichier (vérifie qu'il est dans .gitignore)."
+            "TELEGRAM_TOKEN missing. Create a .env file (see .env.example) "
+            "and NEVER commit it (check it's in .gitignore)."
         )
     application = Application.builder().token(config.TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
@@ -270,8 +298,9 @@ def main():
     application.add_handler(CommandHandler("stats", stats_cmd))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, orchestrateur_intelligent))
     application.add_handler(CallbackQueryHandler(feedback_callback, pattern=r"^fb:"))
+    application.add_error_handler(error_handler)
 
-    logger.info("⚡ Sentinel-Spam Bot v2 en ligne (heuristique + Ollama async)")
+    logger.info("Sentinel-Spam Bot v3 online (heuristic routing + async Ollama + bilingual EN/FR)")
     application.run_polling()
 
 

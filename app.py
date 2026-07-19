@@ -3,6 +3,7 @@ import joblib
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from nltk.stem.porter import PorterStemmer
+import core.config as config
 
 # Initialisation de l'API et des outils NLP
 app = FastAPI(
@@ -14,8 +15,8 @@ stemmer = PorterStemmer()
 
 # Chargement unique des artefacts au démarrage de l'application
 print("🧠 Chargement du modèle de production...")
-model = joblib.load('best_spam_model.pkl')
-vectorizer = joblib.load('tfidf_vectorizer.pkl')
+model = joblib.load(config.MODEL_PATH)
+vectorizer = joblib.load(config.VECTORIZER_PATH)
 
 # Modèle de données attendu en entrée (Validation par Pydantic)
 class EmailPayload(BaseModel):

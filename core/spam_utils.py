@@ -10,6 +10,7 @@ import requests
 from functools import lru_cache
 from nltk.stem.porter import PorterStemmer
 from langdetect import detect, DetectorFactory, LangDetectException
+import core.config as config
 
 DetectorFactory.seed = 0  # résultats déterministes (langdetect est sinon non-reproductible)
 
@@ -38,9 +39,11 @@ def clean_text_advanced(text: str) -> str:
 
 
 @lru_cache(maxsize=1)
-def load_artifacts(model_path: str = 'best_spam_model.pkl',
-                    vectorizer_path: str = 'tfidf_vectorizer.pkl'):
+def load_artifacts(model_path: str | None = None,
+                    vectorizer_path: str | None = None):
     """Chargement mis en cache (une seule fois par process)."""
+    model_path = model_path or config.MODEL_PATH
+    vectorizer_path = vectorizer_path or config.VECTORIZER_PATH
     model = joblib.load(model_path)
     vectorizer = joblib.load(vectorizer_path)
     return model, vectorizer
@@ -53,19 +56,36 @@ def sigmoid(x: float) -> float:
         return 0.0 if x < 0 else 1.0
 
 
-def predict_with_confidence(text: str, model, vectorizer):
+def load_calibrator(calibrator_path: str):
+    """
+    Charge le calibrateur de confiance (régression logistique de Platt scaling
+    entraînée par retrain_from_feedback.py). Retourne None s'il n'existe pas
+    encore (avant le premier ré-entraînement) -> fallback sur le sigmoid brut.
+    """
+    try:
+        return joblib.load(calibrator_path)
+    except Exception:
+        return None
+
+
+def predict_with_confidence(text: str, model, vectorizer, calibrator=None):
     """
     Retourne (is_spam, confidence_pct, raw_score).
-    confidence_pct est une pseudo-probabilité obtenue via sigmoid du score
-    de décision du SVM (le SVM linéaire n'a pas de predict_proba natif
-    sans recalibration, cette approximation suffit pour l'affichage).
+    Si un calibrateur (Platt scaling) est fourni, la confiance vient d'une
+    vraie probabilité apprise sur des données de validation -- beaucoup plus
+    fiable que l'approximation sigmoid brute utilisée par défaut.
     """
     clean = clean_text_advanced(text)
     vectorized = vectorizer.transform([clean])
     score = model.decision_function(vectorized)[0]
     is_spam = score > 0
-    proba = sigmoid(score)
-    confidence_pct = round((proba if is_spam else 1 - proba) * 100, 1)
+
+    if calibrator is not None:
+        proba_spam = calibrator.predict_proba([[score]])[0][1]
+    else:
+        proba_spam = sigmoid(score)
+
+    confidence_pct = round((proba_spam if is_spam else 1 - proba_spam) * 100, 1)
     return is_spam, confidence_pct, score
 
 
