@@ -1,36 +1,27 @@
 """
-retrain_from_feedback.py — Ré-entraînement périodique intégrant les corrections.
+retrain_from_feedback.py — Ré-entraînement périodique + calibration de confiance.
 
-C'est LA vraie réponse à "le modèle n'apprend pas à long terme" : le cache
-de corrections dans le bot/l'interface ne fait que masquer une erreur déjà
-vue sur un texte identique. Ce script, lui, RÉ-ENTRAÎNE réellement le SVM en
-ajoutant les exemples mal classés (et corrigés par un humain) au jeu
-d'entraînement d'origine.
+Deux choses distinctes que ce script fait :
 
-À lancer manuellement de temps en temps (ex: une fois par semaine, ou quand
-feedback.jsonl a accumulé suffisamment de corrections), PAS en continu :
-un SVM linéaire classique n'a pas d'apprentissage en ligne natif, on le
-ré-entraîne par lots (batch).
+1. RÉ-ENTRAÎNEMENT réel : intègre les corrections de feedback.jsonl (Telegram
+   ET Streamlit, même fichier) au dataset d'origine, refait un vrai .fit(),
+   et cherche automatiquement le meilleur paramètre C par validation croisée
+   (GridSearchCV) -- une vraie amélioration de performance, pas juste un cache.
+
+2. CALIBRATION DE CONFIANCE : le score brut de LinearSVC.decision_function()
+   n'a pas d'échelle de probabilité fiable, ce qui donnait des scores de
+   confiance artificiellement bas (50-66%) même sur des prédictions correctes.
+   Ce script entraîne un petit modèle de calibration de Platt (régression
+   logistique 1D sur les scores) sur un split de validation séparé, pour que
+   les pourcentages affichés reflètent une vraie fiabilité.
+
+Rien n'est perdu : les anciens .pkl sont sauvegardés dans model_backups/
+avant d'être écrasés (sauf en --dry-run, où rien n'est écrasé du tout).
 
 Usage :
-    python retrain_from_feedback.py
-    python retrain_from_feedback.py --dataset dataset_master_clean.csv --text-col text --label-col label
-    python retrain_from_feedback.py --dry-run   # évalue sans écraser les .pkl existants
-
-Le script :
-1. Charge le vectorizer + modèle ACTUELS pour réutiliser exactement les
-   mêmes hyperparamètres (ngrams, class_weight, C, etc.) -- pas besoin de
-   connaître le contenu exact de linear_svm_model.py.
-2. Charge le dataset d'origine (auto-détection des colonnes texte/label si
-   non précisées).
-3. Charge feedback.jsonl, ne garde que les entrées marquées comme erronées
-   (marked_correct=False), et reconstruit le label correct.
-4. Fusionne dataset d'origine + corrections (les corrections sont dupliquées
-   plusieurs fois pour leur donner plus de poids -- un SVM classique n'a pas
-   de vrai sample_weight simple à ajuster sans ça).
-5. Ré-entraîne, évalue sur un split de test, affiche les métriques avant/après.
-6. Sauvegarde les nouveaux .pkl (en gardant une sauvegarde des anciens),
-   sauf en --dry-run.
+    python retrain_from_feedback.py --dry-run    # évalue sans rien écraser
+    python retrain_from_feedback.py              # ré-entraîne et sauvegarde
+    python retrain_from_feedback.py --dataset autre.csv --text-col X --label-col Y
 """
 import argparse
 import shutil
@@ -39,14 +30,16 @@ from datetime import datetime
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.svm import LinearSVC
-from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, f1_score
 
-import config
-from spam_utils import clean_text_advanced
+import core.config as config
+from core.spam_utils import clean_text_advanced
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -56,6 +49,9 @@ LABEL_COL_CANDIDATES = ["label_num", "label", "v1", "class", "category", "spam"]
 # Combien de fois dupliquer chaque exemple corrigé, pour lui donner plus de
 # poids face au dataset d'origine (souvent bien plus volumineux).
 CORRECTION_OVERSAMPLE = 5
+
+# Grille de recherche pour le paramètre de régularisation C du SVM linéaire.
+C_GRID = [0.05, 0.1, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0]
 
 
 def autodetect_columns(df: pd.DataFrame, text_col: str | None, label_col: str | None):
@@ -108,22 +104,23 @@ def load_feedback_corrections(feedback_path: str) -> list[tuple[str, int]]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--dataset", default=str(BASE_DIR / "dataset_master_clean.csv"))
+    parser.add_argument("--dataset", default=str(config.DATASET_MASTER_PATH))
     parser.add_argument("--text-col", default=None)
     parser.add_argument("--label-col", default=None)
     parser.add_argument("--dry-run", action="store_true", help="Évalue sans écraser les fichiers .pkl")
+    parser.add_argument("--no-tune", action="store_true", help="Désactive la recherche du meilleur C (plus rapide)")
     args = parser.parse_args()
 
-    # 1. Récupérer les hyperparamètres du modèle/vectorizer actuels
+    # 1. Récupérer les hyperparamètres du modèle/vectorizer actuels (sauf C, qu'on retune)
     print("📦 Chargement des artefacts actuels pour réutiliser leurs hyperparamètres...")
     old_model = joblib.load(config.MODEL_PATH)
     old_vectorizer = joblib.load(config.VECTORIZER_PATH)
     vec_params = old_vectorizer.get_params()
     model_params = old_model.get_params()
     print(f"   Vectorizer : ngram_range={vec_params.get('ngram_range')}, max_features={vec_params.get('max_features')}")
-    print(f"   Modèle     : class_weight={model_params.get('class_weight')}, C={model_params.get('C')}")
+    print(f"   Modèle     : class_weight={model_params.get('class_weight')}, C actuel={model_params.get('C')}")
 
-    # 2. Dataset d'origine
+    # 2. Dataset d'origine (déjà nettoyé -> pas de re-nettoyage)
     dataset_path = Path(args.dataset)
     if not dataset_path.exists():
         sys.exit(f"❌ Dataset introuvable : {dataset_path}. Précise le chemin avec --dataset.")
@@ -132,12 +129,18 @@ def main():
     print(f"📄 Dataset d'origine : {len(df)} lignes (colonnes détectées : text='{text_col}', label='{label_col}')")
     print(f"   ⚠️  Le texte de '{text_col}' est traité comme DÉJÀ nettoyé (pas de re-nettoyage appliqué).")
 
-    dataset_texts_clean = df[text_col].astype(str).tolist()
+    before = len(df)
+    df = df.dropna(subset=[text_col, label_col]).copy()
+    df[text_col] = df[text_col].astype(str).str.strip()
+    df = df[df[text_col] != ""]
+    dropped = before - len(df)
+    if dropped:
+        print(f"   🧹 {dropped} ligne(s) supprimée(s) (texte ou label manquant/vide).")
+
+    dataset_texts_clean = df[text_col].tolist()
     dataset_labels = [normalize_label(v) for v in df[label_col]]
 
-    # 3. Corrections issues du feedback (celles-là sont du texte BRUT, tel que
-    #    tapé par l'utilisateur -> il faut leur appliquer le même nettoyage
-    #    que la production pour qu'elles soient comparables au dataset).
+    # 3. Corrections issues du feedback (texte BRUT -> nettoyage identique à la prod)
     corrections = load_feedback_corrections(config.FEEDBACK_LOG_PATH)
     print(f"🔧 {len(corrections)} correction(s) trouvée(s) dans {config.FEEDBACK_LOG_PATH}")
     if not corrections:
@@ -151,55 +154,91 @@ def main():
         correction_texts_clean.extend([cleaned] * CORRECTION_OVERSAMPLE)
         correction_labels.extend([label] * CORRECTION_OVERSAMPLE)
 
-    cleaned = dataset_texts_clean + correction_texts_clean
-    labels = dataset_labels + correction_labels
+    all_texts = dataset_texts_clean + correction_texts_clean
+    all_labels = dataset_labels + correction_labels
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        cleaned, labels, test_size=0.2, random_state=42, stratify=labels
+    # 4. Split en 3 : train (fit du modèle) / calib (fit du calibrateur de
+    #    confiance) / test (évaluation finale, jamais vu par les deux autres).
+    train_texts, temp_texts, train_labels, temp_labels = train_test_split(
+        all_texts, all_labels, test_size=0.3, random_state=42, stratify=all_labels
     )
+    calib_texts, test_texts, calib_labels, test_labels = train_test_split(
+        temp_texts, temp_labels, test_size=0.5, random_state=42, stratify=temp_labels
+    )
+    print(f"📊 Split : {len(train_texts)} train / {len(calib_texts)} calibration / {len(test_texts)} test")
 
-    # 5. Ré-entraînement avec les MÊMES hyperparamètres que le modèle en prod
-    print("🏋️  Ré-entraînement...")
+    # 5. Vectorisation (même hyperparamètres que le vectorizer en prod)
     new_vectorizer = TfidfVectorizer(**{
         k: v for k, v in vec_params.items() if k not in ("input", "dtype")
     })
-    X_train_vec = new_vectorizer.fit_transform(X_train)
-    X_test_vec = new_vectorizer.transform(X_test)
+    X_train = new_vectorizer.fit_transform(train_texts)
+    X_calib = new_vectorizer.transform(calib_texts)
+    X_test = new_vectorizer.transform(test_texts)
 
-    new_model = LinearSVC(**{
-        k: v for k, v in model_params.items()
-    })
-    new_model.fit(X_train_vec, y_train)
+    # 6. Ré-entraînement, avec recherche du meilleur C par validation croisée
+    #    (amélioration réelle de performance, pas juste l'ajout de corrections)
+    base_params = {k: v for k, v in model_params.items() if k != "C"}
+    if args.no_tune:
+        print(f"🏋️  Entraînement avec C={model_params.get('C')} (recherche désactivée)...")
+        new_model = LinearSVC(**model_params)
+        new_model.fit(X_train, train_labels)
+    else:
+        print(f"🔍 Recherche du meilleur C parmi {C_GRID} (validation croisée, scoring=F1)...")
+        grid = GridSearchCV(
+            LinearSVC(**base_params), param_grid={"C": C_GRID}, scoring="f1", cv=5, n_jobs=-1,
+        )
+        grid.fit(X_train, train_labels)
+        new_model = grid.best_estimator_
+        print(f"   Meilleur C trouvé : {grid.best_params_['C']} (F1 CV = {grid.best_score_:.4f})")
 
-    # 6. Évaluation avant/après sur le même split de test
-    old_test_vec = old_vectorizer.transform(X_test)
+    # 7. Calibration de confiance (Platt scaling) sur le split dédié
+    print("🎯 Calibration des scores de confiance sur le split de validation...")
+    calib_scores = new_model.decision_function(X_calib).reshape(-1, 1)
+    calibrator = LogisticRegression()
+    calibrator.fit(calib_scores, calib_labels)
+
+    # 8. Évaluation finale (avant/après) sur le split de test, jamais vu
+    old_test_vec = old_vectorizer.transform(test_texts)
     old_preds = old_model.predict(old_test_vec)
-    new_preds = new_model.predict(X_test_vec)
+    new_preds = new_model.predict(X_test)
 
-    print("\n=== Modèle ACTUEL (avant ré-entraînement) sur ce split de test ===")
-    print(classification_report(y_test, old_preds, target_names=["HAM", "SPAM"]))
-    print("\n=== Nouveau modèle (après intégration des corrections) ===")
-    print(classification_report(y_test, new_preds, target_names=["HAM", "SPAM"]))
+    print("\n=== Modèle ACTUEL (avant ré-entraînement) ===")
+    print(classification_report(test_labels, old_preds, target_names=["HAM", "SPAM"]))
+    print("\n=== Nouveau modèle (corrections + C optimisé + calibration) ===")
+    print(classification_report(test_labels, new_preds, target_names=["HAM", "SPAM"]))
 
-    old_f1 = f1_score(y_test, old_preds)
-    new_f1 = f1_score(y_test, new_preds)
+    old_f1 = f1_score(test_labels, old_preds)
+    new_f1 = f1_score(test_labels, new_preds)
     print(f"\nF1-score : {old_f1:.4f} → {new_f1:.4f} ({'+' if new_f1 >= old_f1 else ''}{(new_f1 - old_f1):.4f})")
+
+    # Sanity check de la calibration : la confiance moyenne sur les bonnes
+    # prédictions doit être nettement plus haute que sur les erreurs.
+    test_scores = new_model.decision_function(X_test)
+    test_proba_spam = calibrator.predict_proba(test_scores.reshape(-1, 1))[:, 1]
+    confidences = np.where(new_preds == 1, test_proba_spam, 1 - test_proba_spam) * 100
+    correct_mask = np.array(new_preds) == np.array(test_labels)
+    print(f"Confiance moyenne (prédictions correctes) : {confidences[correct_mask].mean():.1f}%")
+    if (~correct_mask).sum() > 0:
+        print(f"Confiance moyenne (prédictions erronées)  : {confidences[~correct_mask].mean():.1f}%")
 
     if args.dry_run:
         print("\n--dry-run activé : rien n'a été écrasé.")
         return
 
-    # 7. Sauvegarde avec backup des anciens fichiers
+    # 9. Sauvegarde avec backup des anciens fichiers -- rien n'est perdu
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_dir = BASE_DIR / "model_backups"
+    backup_dir = BASE_DIR / "models" / "model_backups"
     backup_dir.mkdir(exist_ok=True)
     shutil.copy(config.MODEL_PATH, backup_dir / f"best_spam_model_{timestamp}.pkl")
     shutil.copy(config.VECTORIZER_PATH, backup_dir / f"tfidf_vectorizer_{timestamp}.pkl")
+    if Path(config.CALIBRATOR_PATH).exists():
+        shutil.copy(config.CALIBRATOR_PATH, backup_dir / f"confidence_calibrator_{timestamp}.pkl")
 
     joblib.dump(new_model, config.MODEL_PATH)
     joblib.dump(new_vectorizer, config.VECTORIZER_PATH)
-    print(f"\n✅ Nouveaux modèle et vectorizer sauvegardés (anciens sauvegardés dans {backup_dir}/).")
-    print("Redémarre le bot Telegram et l'interface Streamlit pour charger le nouveau modèle.")
+    joblib.dump(calibrator, config.CALIBRATOR_PATH)
+    print(f"\n✅ Modèle, vectorizer et calibrateur sauvegardés (anciens dans {backup_dir}/).")
+    print("Redémarre le bot Telegram et/ou l'interface Streamlit pour charger le nouveau modèle.")
 
 
 if __name__ == "__main__":

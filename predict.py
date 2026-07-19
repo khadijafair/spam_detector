@@ -1,6 +1,7 @@
 import re
 import joblib
 from nltk.stem.porter import PorterStemmer
+import core.config as config
 
 stemmer = PorterStemmer()
 
@@ -17,8 +18,8 @@ def clean_text_advanced(text):
 
 # ⚡ Chargement instantané des cerveaux sauvegardés
 print("🧠 Chargement du modèle et du vectoriseur sérialisés...")
-model = joblib.load('best_spam_model.pkl')
-vectorizer = joblib.load('tfidf_vectorizer.pkl')
+model = joblib.load(config.MODEL_PATH)
+vectorizer = joblib.load(config.VECTORIZER_PATH)
 
 # 📝 ICI : Mets l'e-mail brut que tu veux tester en temps réel !
 email_a_tester = """

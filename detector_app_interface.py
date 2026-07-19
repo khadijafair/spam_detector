@@ -21,10 +21,11 @@ from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
 
-import config
-from spam_utils import (
+import core.config as config
+from core.spam_utils import (
     load_artifacts, predict_with_confidence, explain_prediction,
     is_borderline, load_corrections, detect_language, translate_to_english_sync,
+    load_calibrator,
 )
 
 st.set_page_config(page_title="Sentinel-Spam", page_icon="🛡️", layout="centered")
@@ -34,11 +35,18 @@ FEEDBACK_LOG_PATH = config.FEEDBACK_LOG_PATH
 
 @st.cache_resource
 def get_artifacts():
-    return load_artifacts(config.MODEL_PATH, config.VECTORIZER_PATH)
+    model, vectorizer = load_artifacts(config.MODEL_PATH, config.VECTORIZER_PATH)
+    calibrator = load_calibrator(config.CALIBRATOR_PATH)
+    return model, vectorizer, calibrator
 
 
 try:
-    model, vectorizer = get_artifacts()
+    model, vectorizer, confidence_calibrator = get_artifacts()
+    if confidence_calibrator is None:
+        st.sidebar.warning(
+            "No confidence calibrator found yet. Confidence scores use a rough "
+            "approximation until you run `retrain_feedback.py` once."
+        )
 except Exception:
     st.error("⚠️ Model files not found. Run the training script first to generate "
              "best_spam_model.pkl and tfidf_vectorizer.pkl.")
@@ -89,7 +97,7 @@ with tab_single:
                         text_for_model = translated
                         translated_shown = translated
 
-                is_spam, confidence, score = predict_with_confidence(text_for_model, model, vectorizer)
+                is_spam, confidence, score = predict_with_confidence(text_for_model, model, vectorizer, confidence_calibrator)
                 top_words = explain_prediction(text_for_model, model, vectorizer, top_n=8)
                 if override_label is not None:
                     is_spam = override_label == "SPAM"
@@ -150,7 +158,7 @@ with tab_batch:
                         translated = translate_to_english_sync(text, config.OLLAMA_URL, config.MODEL_LLM)
                         if translated:
                             text_for_model = translated
-                    is_spam, confidence, _ = predict_with_confidence(text_for_model, model, vectorizer)
+                    is_spam, confidence, _ = predict_with_confidence(text_for_model, model, vectorizer, confidence_calibrator)
                     results.append({
                         "verdict": "SPAM" if is_spam else "HAM",
                         "confidence_%": confidence,

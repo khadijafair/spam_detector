@@ -34,11 +34,12 @@ from telegram.ext import (
     filters, ContextTypes,
 )
 
-import config
-import i18n
-from spam_utils import (
+import core.config as config
+import core.i18n
+from core.spam_utils import (
     load_artifacts, predict_with_confidence, explain_prediction,
     is_borderline, load_corrections, detect_language, TRANSLATE_PROMPT_TEMPLATE,
+    load_calibrator,
 )
 
 logging.basicConfig(
@@ -48,6 +49,13 @@ logging.basicConfig(
 logger = logging.getLogger("sentinel-spam-bot")
 
 model_svm, vectorizer = load_artifacts(config.MODEL_PATH, config.VECTORIZER_PATH)
+confidence_calibrator = load_calibrator(config.CALIBRATOR_PATH)
+if confidence_calibrator is None:
+    logger.warning(
+        "No confidence calibrator found at %s -- confidence scores use a rough "
+        "approximation until you run retrain_from_feedback.py once.",
+        config.CALIBRATOR_PATH,
+    )
 
 # Mots-clés (bilingues) qui trahissent quasi-certainement une demande d'analyse
 # plutôt qu'un bavardage. Ça évite d'appeler le LLM pour trancher les cas évidents.
@@ -192,7 +200,7 @@ async def orchestrateur_intelligent(update: Update, context: ContextTypes.DEFAUL
         else:
             translation_note = "\n\n_" + i18n.t(display_lang, "translation_unavailable") + "_"
 
-    is_spam, confidence, score = predict_with_confidence(text_for_model, model_svm, vectorizer)
+    is_spam, confidence, score = predict_with_confidence(text_for_model, model_svm, vectorizer, confidence_calibrator)
     top_words = explain_prediction(text_for_model, model_svm, vectorizer, top_n=5)
     uncertain = is_borderline(confidence)
 
@@ -264,6 +272,20 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Filet de sécurité global : loggue l'erreur ET informe l'utilisateur au lieu
+    de le laisser sans réponse (ce qui s'est produit avec l'AttributeError i18n)."""
+    logger.error("Unhandled exception while processing update: %s", context.error, exc_info=context.error)
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "⚠️ Something went wrong while processing your message. Please try again "
+                "in a moment. / Une erreur est survenue, réessaie dans un instant."
+            )
+        except Exception:
+            pass
+
+
 def main():
     if not config.TELEGRAM_TOKEN:
         raise RuntimeError(
@@ -276,6 +298,7 @@ def main():
     application.add_handler(CommandHandler("stats", stats_cmd))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, orchestrateur_intelligent))
     application.add_handler(CallbackQueryHandler(feedback_callback, pattern=r"^fb:"))
+    application.add_error_handler(error_handler)
 
     logger.info("Sentinel-Spam Bot v3 online (heuristic routing + async Ollama + bilingual EN/FR)")
     application.run_polling()
