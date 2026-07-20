@@ -1,18 +1,9 @@
 """
-app.py — FastAPI production endpoint, v2.
+api.py — FastAPI production endpoint.
 
-Rewritten to share the exact same pipeline as the Telegram bot and the
-Streamlit app (core.spam_utils), instead of duplicating the cleaning logic.
-This closes a real correctness gap: the old version had no language
-detection/translation, no confidence calibration, and no explainability,
-so a French email sent to the API would get a poor, uncalibrated score --
-the same issue we fixed everywhere else.
-
-Endpoints:
-- GET  /            -> health/info
-- GET  /health      -> liveness check for monitoring/orchestration
-- POST /predict     -> full analysis (translation, calibrated confidence,
-                        explainability), same behaviour as the other interfaces
+Shares the exact same pipeline as the Telegram bot and the Streamlit app
+(core.spam_utils): language detection + translation, calibrated confidence,
+explainability. Run with: uvicorn api:app --reload
 """
 import logging
 
@@ -32,17 +23,10 @@ logger = logging.getLogger("sentinel-spam-api")
 app = FastAPI(
     title="Spam & Phishing Detector API",
     description="Real-time classification powered by a calibrated Linear SVM, "
-                 "with automatic translation and LLM-assisted arbitration on "
-                 "borderline scores (shares the same pipeline as the bot/Streamlit app).",
+                 "with automatic translation and LLM-assisted arbitration on borderline scores.",
     version="2.0.0",
 )
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 model = None
 vectorizer = None
@@ -51,27 +35,17 @@ calibrator = None
 
 @app.on_event("startup")
 def load_model_artifacts():
-    """Loaded explicitly at startup (not at import time) so a missing file
-    produces a clear log message instead of a cryptic crash during import."""
     global model, vectorizer, calibrator
     try:
         model, vectorizer = load_artifacts(config.MODEL_PATH, config.VECTORIZER_PATH)
         logger.info("Model and vectorizer loaded from %s / %s", config.MODEL_PATH, config.VECTORIZER_PATH)
     except Exception as e:
-        logger.error(
-            "Failed to load model artifacts from %s / %s: %s. "
-            "Run linear_svm_model.py (or retrain_feedback.py) first.",
-            config.MODEL_PATH, config.VECTORIZER_PATH, e,
-        )
+        logger.error("Failed to load model artifacts: %s. Run train_model.py first.", e)
         raise
 
     calibrator = load_calibrator(config.CALIBRATOR_PATH)
     if calibrator is None:
-        logger.warning(
-            "No confidence calibrator found at %s -- confidence scores use a rough "
-            "approximation until you run retrain_feedback.py once.",
-            config.CALIBRATOR_PATH,
-        )
+        logger.warning("No confidence calibrator found -- run retrain_feedback.py once to generate one.")
 
 
 class EmailPayload(BaseModel):
@@ -94,11 +68,7 @@ class PredictionResponse(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {
-        "status": "online",
-        "model": "Linear SVM (calibrated)" if calibrator else "Linear SVM (uncalibrated)",
-        "version": "2.0.0",
-    }
+    return {"status": "online", "model": "Linear SVM (calibrated)" if calibrator else "Linear SVM", "version": "2.0.0"}
 
 
 @app.get("/health")

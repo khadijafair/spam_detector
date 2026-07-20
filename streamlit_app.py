@@ -1,19 +1,9 @@
 """
-detector_app_interface.py — Streamlit interface, v3.
+streamlit_app.py — Web interface. Run with: streamlit run streamlit_app.py
 
-Language design: the interface is centralized in English (consistent with
-the English-trained dataset and the rest of the codebase). If pasted text
-is detected as non-English, it's transparently translated to English via
-Ollama before classification (the translated text is shown in an expander
-for transparency). The UI labels themselves stay English regardless of the
-analyzed text's language -- this keeps the tool simple and consistent,
-unlike the Telegram bot, whose free-form chat mode is bilingual by design.
-
-Other improvements kept from v2:
-- Confidence score + explainability (most influential words)
-- Borderline-score detection -> warning instead of a falsely confident verdict
-- Correction cache from user feedback (👍/👎)
-- Shared NLP pipeline via spam_utils.py (no duplication with the bot)
+Non-English input is transparently translated via Ollama before
+classification (dataset is English-only), with the translated text shown
+in an expander for transparency.
 """
 import json
 from datetime import datetime, timezone
@@ -43,13 +33,9 @@ def get_artifacts():
 try:
     model, vectorizer, confidence_calibrator = get_artifacts()
     if confidence_calibrator is None:
-        st.sidebar.warning(
-            "No confidence calibrator found yet. Confidence scores use a rough "
-            "approximation until you run `retrain_feedback.py` once."
-        )
+        st.sidebar.warning("No confidence calibrator found yet. Run `retrain_feedback.py` once to generate one.")
 except Exception:
-    st.error("⚠️ Model files not found. Run the training script first to generate "
-             "best_spam_model.pkl and tfidf_vectorizer.pkl.")
+    st.error("⚠️ Model files not found. Run train_model.py first.")
     st.stop()
 
 if "history" not in st.session_state:
@@ -75,8 +61,7 @@ tab_single, tab_batch, tab_history = st.tabs(["🔍 Single analysis", "📂 Batc
 # ---------------------------------------------------------------- Single analysis
 with tab_single:
     email_input = st.text_area(
-        "Content to analyze:",
-        height=220,
+        "Content to analyze:", height=220,
         placeholder="Paste the full message text here (any language)...",
     )
 
@@ -102,9 +87,7 @@ with tab_single:
                 if override_label is not None:
                     is_spam = override_label == "SPAM"
 
-            st.session_state.history.append({
-                "text": email_input, "is_spam": is_spam, "confidence": confidence,
-            })
+            st.session_state.history.append({"text": email_input, "is_spam": is_spam, "confidence": confidence})
 
             st.markdown("---")
             if override_label is not None:
@@ -120,15 +103,11 @@ with tab_single:
                 st.error(f"🚨 **SPAM / PHISHING DETECTED** — confidence {confidence}%")
             else:
                 st.success(f"✅ **LEGITIMATE MESSAGE (HAM)** — confidence {confidence}%")
-
             st.progress(confidence / 100)
 
             if top_words:
                 st.subheader("Most influential words")
                 df_words = pd.DataFrame(top_words, columns=["word", "contribution"])
-                df_words["direction"] = df_words["contribution"].apply(
-                    lambda c: "toward SPAM" if c > 0 else "toward HAM"
-                )
                 st.bar_chart(df_words.set_index("word")["contribution"])
                 st.caption("Positive contribution = pushes toward SPAM · negative = pushes toward HAM")
 
@@ -159,19 +138,11 @@ with tab_batch:
                         if translated:
                             text_for_model = translated
                     is_spam, confidence, _ = predict_with_confidence(text_for_model, model, vectorizer, confidence_calibrator)
-                    results.append({
-                        "verdict": "SPAM" if is_spam else "HAM",
-                        "confidence_%": confidence,
-                        "detected_lang": lang,
-                    })
+                    results.append({"verdict": "SPAM" if is_spam else "HAM", "confidence_%": confidence, "detected_lang": lang})
                 out_df = pd.concat([df, pd.DataFrame(results)], axis=1)
             st.dataframe(out_df, use_container_width=True)
-            st.download_button(
-                "Download results (CSV)",
-                out_df.to_csv(index=False).encode("utf-8"),
-                "analysis_results.csv",
-                "text/csv",
-            )
+            st.download_button("Download results (CSV)", out_df.to_csv(index=False).encode("utf-8"),
+                                "analysis_results.csv", "text/csv")
 
 # ---------------------------------------------------------------- History
 with tab_history:

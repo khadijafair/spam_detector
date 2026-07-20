@@ -1,13 +1,11 @@
 """
-i18n.py — Centralise les chaînes affichées à l'utilisateur.
+i18n.py — User-facing strings for the Telegram bot.
 
-Choix de design :
-- Le code, les logs, le dataset, l'interface Streamlit sont en anglais (langue
-  de base du projet, cohérente avec le modèle ML entraîné en anglais).
-- Le bot Telegram adapte l'affichage du VERDICT à la langue du message analysé
-  (en/fr supportés ici ; toute autre langue retombe sur l'anglais).
-- Le mode "chat" du bot n'utilise PAS ce module : Ollama répond nativement
-  dans la langue de l'utilisateur sans template figé (cf. prompt dans telegram_bot.py).
+Design: the app/API/code stay in English (matches the English-trained
+dataset). The Telegram bot's verdict messages adapt to the language of the
+analyzed text (en/fr here, English fallback otherwise). The bot's free-chat
+mode doesn't use this file -- Ollama replies natively in whatever language
+the user writes in.
 """
 
 STRINGS = {
@@ -35,8 +33,7 @@ STRINGS = {
         ),
         "help_message": (
             "ℹ️ *Help*\n"
-            "- Send a normal message → I'll chat with you (in English or French, "
-            "whichever you use).\n"
+            "- Send a normal message → I'll chat with you (English or French).\n"
             "- Send a suspicious text (email, SMS, link) → I'll analyse it and give a verdict.\n"
             "- After a verdict, use 👍/👎 to tell me if I was right: it feeds a log "
             "that can be used to retrain the model.\n"
@@ -68,8 +65,7 @@ STRINGS = {
         ),
         "help_message": (
             "ℹ️ *Aide*\n"
-            "- Envoie un message normal → je discute avec toi (en français ou en anglais, "
-            "selon ce que tu utilises).\n"
+            "- Envoie un message normal → je discute avec toi (français ou anglais).\n"
             "- Envoie un texte suspect (mail, SMS, lien) → j'analyse et te donne un verdict.\n"
             "- Après un verdict, utilise 👍/👎 pour me dire si j'ai eu raison : "
             "ça alimente un journal utilisable pour ré-entraîner le modèle.\n"
@@ -83,7 +79,7 @@ SUPPORTED_VERDICT_LANGS = ("en", "fr")
 
 
 def t(ui_lang: str, key: str, **kwargs) -> str:
-    """Retourne la chaîne traduite pour `ui_lang` (retombe sur 'en' si non supportée)."""
+    """Returns the translated string for `ui_lang` (falls back to English)."""
     ui_lang = ui_lang if ui_lang in STRINGS else "en"
     template = STRINGS[ui_lang].get(key, STRINGS["en"].get(key, key))
     return template.format(**kwargs) if kwargs else template

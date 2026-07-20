@@ -1,7 +1,7 @@
 """
-spam_utils.py — Pipeline NLP partagé entre le bot Telegram et l'interface Streamlit.
-Centraliser cette logique évite les divergences entre les deux interfaces
-(un bug corrigé ici est corrigé partout).
+spam_utils.py — Shared NLP pipeline used by every interface (API, Streamlit,
+Telegram bot, training scripts). Keeping this logic in one place means a fix
+here applies everywhere at once.
 """
 import re
 import math
@@ -12,11 +12,10 @@ from nltk.stem.porter import PorterStemmer
 from langdetect import detect, DetectorFactory, LangDetectException
 import core.config as config
 
-DetectorFactory.seed = 0  # résultats déterministes (langdetect est sinon non-reproductible)
+DetectorFactory.seed = 0  # deterministic langdetect results
 
 stemmer = PorterStemmer()
 
-# Regex précompilées (perf : évite de les recompiler à chaque appel)
 _RE_URL = re.compile(r'https?://\S+|www\.\S+')
 _RE_EMAIL = re.compile(r'\S+@\S+')
 _RE_MONEY = re.compile(r'\$\d+(?:[\.,]\d+)?|£\d+(?:[\.,]\d+)?|\b\d+\s*(?:dollars|usd|euro|euros)\b')
@@ -26,7 +25,7 @@ _RE_NONALPHA = re.compile(r'[^a-zA-Z\s]')
 
 
 def clean_text_advanced(text: str) -> str:
-    """Nettoyage + tokenisation + stemming, identique à l'entraînement du modèle."""
+    """Cleaning + tokenization + stemming, identical to what the model was trained on."""
     text = str(text).lower()
     text = _RE_URL.sub(' urltoken ', text)
     text = _RE_EMAIL.sub(' emailtoken ', text)
@@ -39,9 +38,7 @@ def clean_text_advanced(text: str) -> str:
 
 
 @lru_cache(maxsize=1)
-def load_artifacts(model_path: str | None = None,
-                    vectorizer_path: str | None = None):
-    """Chargement mis en cache (une seule fois par process)."""
+def load_artifacts(model_path: str | None = None, vectorizer_path: str | None = None):
     model_path = model_path or config.MODEL_PATH
     vectorizer_path = vectorizer_path or config.VECTORIZER_PATH
     model = joblib.load(model_path)
@@ -57,11 +54,8 @@ def sigmoid(x: float) -> float:
 
 
 def load_calibrator(calibrator_path: str):
-    """
-    Charge le calibrateur de confiance (régression logistique de Platt scaling
-    entraînée par retrain_from_feedback.py). Retourne None s'il n'existe pas
-    encore (avant le premier ré-entraînement) -> fallback sur le sigmoid brut.
-    """
+    """Loads the Platt-scaling calibrator (trained by retrain_feedback.py).
+    Returns None if it doesn't exist yet -> caller falls back to sigmoid()."""
     try:
         return joblib.load(calibrator_path)
     except Exception:
@@ -69,32 +63,21 @@ def load_calibrator(calibrator_path: str):
 
 
 def predict_with_confidence(text: str, model, vectorizer, calibrator=None):
-    """
-    Retourne (is_spam, confidence_pct, raw_score).
-    Si un calibrateur (Platt scaling) est fourni, la confiance vient d'une
-    vraie probabilité apprise sur des données de validation -- beaucoup plus
-    fiable que l'approximation sigmoid brute utilisée par défaut.
-    """
+    """Returns (is_spam, confidence_pct, raw_score). Uses the calibrator for a
+    properly calibrated confidence if available, otherwise a rough sigmoid."""
     clean = clean_text_advanced(text)
     vectorized = vectorizer.transform([clean])
     score = model.decision_function(vectorized)[0]
     is_spam = score > 0
 
-    if calibrator is not None:
-        proba_spam = calibrator.predict_proba([[score]])[0][1]
-    else:
-        proba_spam = sigmoid(score)
-
+    proba_spam = calibrator.predict_proba([[score]])[0][1] if calibrator is not None else sigmoid(score)
     confidence_pct = round((proba_spam if is_spam else 1 - proba_spam) * 100, 1)
     return is_spam, confidence_pct, score
 
 
 def detect_language(text: str) -> str:
-    """
-    Retourne un code langue ISO 639-1 ('en', 'fr', 'es', ...) ou 'unknown'
-    si le texte est trop court pour être fiable (langdetect n'est pas fiable
-    en dessous de ~3 mots).
-    """
+    """Returns an ISO 639-1 code, or 'unknown' if the text is too short (< 3 words)
+    for langdetect to be reliable."""
     if len(text.split()) < 3:
         return "unknown"
     try:
@@ -111,7 +94,7 @@ TRANSLATE_PROMPT_TEMPLATE = (
 
 
 def translate_to_english_sync(text: str, ollama_url: str, model_llm: str, timeout: float = 25.0):
-    """Version synchrone (utilisée par l'interface Streamlit) : appel bloquant à Ollama."""
+    """Blocking Ollama call (used by the Streamlit app and the API)."""
     payload = {"model": model_llm, "prompt": TRANSLATE_PROMPT_TEMPLATE.format(text=text), "stream": False}
     try:
         resp = requests.post(ollama_url, json=payload, timeout=timeout)
@@ -123,24 +106,16 @@ def translate_to_english_sync(text: str, ollama_url: str, model_llm: str, timeou
 
 
 def is_borderline(confidence_pct: float, margin: float = 15.0) -> bool:
-    """
-    True si le score est trop proche de 50% pour être fiable (le modèle
-    n'a quasiment aucun signal net sur ce texte -- typiquement un texte
-    hors du domaine/langue d'entraînement). Un verdict borderline devrait
-    être signalé comme incertain plutôt qu'affiché avec la même autorité
-    qu'un 95%.
-    """
+    """True if the score is too close to 50% to be trusted -- typically a
+    text outside the model's training domain/language."""
     return confidence_pct <= (50 + margin)
 
 
 def load_corrections(feedback_log_path: str) -> dict:
-    """
-    Relit le journal de feedback et construit un cache {texte_exact: label_corrigé}
-    pour les cas explicitement marqués comme erronés par un utilisateur.
-    Ce n'est PAS un ré-entraînement du modèle, juste un filet de sécurité pour
-    ne pas répéter une erreur déjà signalée sur un texte identique. Le vrai
-    correctif reste de ré-entraîner le modèle avec ces exemples.
-    """
+    """Reads feedback.jsonl and builds a {exact_text: corrected_label} cache
+    for entries explicitly flagged as wrong. Not model retraining -- just a
+    safety net against repeating an error on an identical text. Use
+    retrain_feedback.py for actual learning."""
     import json
     import os
 
@@ -158,28 +133,21 @@ def load_corrections(feedback_log_path: str) -> dict:
                 continue
             if entry.get("marked_correct") is False:
                 wrong_label = entry["predicted_label"]
-                corrected_label = "HAM" if wrong_label == "SPAM" else "SPAM"
-                corrections[entry["text"].strip()] = corrected_label
+                corrections[entry["text"].strip()] = "HAM" if wrong_label == "SPAM" else "SPAM"
     return corrections
 
 
 def explain_prediction(text: str, model, vectorizer, top_n: int = 6):
-    """
-    Explicabilité "gratuite" : pour un SVM linéaire, chaque mot présent dans
-    le message contribue au score via (poids_tfidf * coefficient_du_mot).
-    On retourne les mots qui ont le plus tiré la décision vers SPAM ou HAM.
-    Retourne une liste de tuples (mot, contribution) triée par |contribution| décroissante.
-    """
+    """Returns the (word, contribution) pairs that most influenced the verdict,
+    computed as tfidf_weight * svm_coefficient, sorted by |contribution|."""
     clean = clean_text_advanced(text)
     vectorized = vectorizer.transform([clean])
     coef = model.coef_[0]
     feature_names = vectorizer.get_feature_names_out()
 
-    contributions = []
-    # vectorized est une matrice creuse : on ne regarde que les indices non nuls
-    for idx in vectorized.nonzero()[1]:
-        weight = vectorized[0, idx] * coef[idx]
-        contributions.append((feature_names[idx], float(weight)))
-
+    contributions = [
+        (feature_names[idx], float(vectorized[0, idx] * coef[idx]))
+        for idx in vectorized.nonzero()[1]
+    ]
     contributions.sort(key=lambda t: abs(t[1]), reverse=True)
     return contributions[:top_n]
