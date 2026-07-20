@@ -96,21 +96,22 @@ Plaintext 📥 Input Text (Any Language)
 │  ├─ config.py                 # Safe environment configuration loader
 │  ├─ i18n.py                   # Multi-language dictionary engine (EN/FR)
 │  └─ spam_utils.py             # Global NLP preprocessing & explainability utils
-├─ research/                    # Phase 1 & Phase 2 Notebooks/Scripts
-│  ├─ app_dataset.py            # Legacy historical ingestion scripts
+├─ research/                    
+│  ├─ train_model.py           # Legacy historical ingestion scripts
 │  ├─ benchmark_models.py      # Classifier comparison tournament runner
-│  ├─ inspect_dataset.py       # Basic dataset metrics & vocabulary balance
-│  └─ pipeline_phase1.py        # Early architectural feature baseline
+│  └─ inspect_dataset.py       # Basic dataset metrics & vocabulary balance
+├─ data/
 ├─ models/                      # Saved Model Binaries
 │  ├─ best_spam_model.pkl       # Serialized SVM weight matrices
 │  ├─ confidence_calibrator.pkl # Saved Platt-scaling coefficients
 │  └─ tfidf_vectorizer.pkl      # Serialized TF-IDF feature vocabulary
-├─ app.py                       # FastAPI Production Endpoint Engine
-├─ detector_app_interface.py    # Streamlit Interactive Web Application
+├─ api.py                       # FastAPI Production Endpoint Engine
+├─ streamli_app.py              # Streamlit Interactive Web Application
 ├─ telegram_bot.py              # Asynchronous Telegram Gateway Interface
 ├─ retrain_feedback.py          # Continuous learning MLOps worker script
-├─ predict.py                   # Fast CLI prediction utility
 ├─ Dockerfile                   # Containerization configuration manifest
 └─ requirements.txt             # Project software dependencies manifest
 
 📈 Baseline Model PerformanceDuring our initial model selection phase, the foundational Linear SVM model delivered the following metrics against our evaluation baseline data matrix:MetricScorePerformance TrajectoryAccuracy98.50%High structural generalizationPrecision98.23%Exceptionally low false-positive occurrencesRecall98.90%Comprehensive threat capture rateF1-Score98.56%Balanced precision-recall mathematical harmony💡 Design Architecture Note: The core SVM classifier explicitly initializes with class_weight='balanced'. This design choice artificially penalizes False Negatives, forcing the system to actively filter out subtle, malicious fraud schemes.
+
+
