@@ -3,8 +3,12 @@ scikit-learn
 nltk
 joblib
 streamlit
+fastapi
+uvicorn
 python-telegram-bot==21.1
 python-dotenv
 langdetect
 requests
 httpx
+tabulate
+pytest

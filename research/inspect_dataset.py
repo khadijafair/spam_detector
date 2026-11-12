@@ -1,7 +1,8 @@
 import os
 import pandas as pd
 
-dossier_dataset = 'dataset'
+import core.config as config
+dossier_dataset = config.RAW_DATASET_DIR
 
 print("🔍 ANALYSE DES COLONNES DE CHAQUE FICHIER :\n")
 

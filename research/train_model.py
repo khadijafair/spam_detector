@@ -1,34 +1,46 @@
 """
-train_model.py — Initial training script. Produces the artifacts every
-interface loads (models/best_spam_model.pkl, models/tfidf_vectorizer.pkl).
+train_model.py — Trains the production artifacts every interface loads:
+  models/best_spam_model.pkl        Linear SVM (class_weight='balanced')
+  models/tfidf_vectorizer.pkl       TF-IDF, unigrams + bigrams, 50k features
+  models/confidence_calibrator.pkl  Platt scaling fitted on a held-out 15%
 
-Run this once to bootstrap the model; use retrain_feedback.py afterwards to
-fold in user corrections over time.
+Uses the full de-duplicated dataset (no 20k sampling). Run once to bootstrap,
+then use retrain_feedback.py to fold in user corrections over time.
+
+Usage (from the project root):
+    python -m research.train_model
 """
-import pandas as pd
 import joblib
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
 from sklearn.svm import LinearSVC
 
 import core.config as config
+from research.evaluate import SEED, load_master, vectorizer
 
-print("Loading cleaned dataset...")
-df = pd.read_csv(config.DATASET_MASTER_PATH).dropna()
 
-if df.shape[0] > 20000:
-    df = df.sample(n=20000, random_state=42).reset_index(drop=True)
+def main():
+    df = load_master()
+    print(f"Dataset: {len(df)} emails")
+    X_fit, X_cal, y_fit, y_cal = train_test_split(
+        df["clean_text"], df["label_num"], test_size=0.15, random_state=SEED, stratify=df["label_num"])
 
-print("Vectorizing (TF-IDF, unigrams + bigrams)...")
-vectorizer = TfidfVectorizer(stop_words='english', ngram_range=(1, 2), max_features=50000)
-X = vectorizer.fit_transform(df['clean_text'])
-y = df['label_num']
+    vec = vectorizer()
+    X = vec.fit_transform(X_fit)
+    print(f"Training Linear SVM on {len(X_fit)} emails...")
+    model = LinearSVC(class_weight="balanced", random_state=SEED, dual=False)
+    model.fit(X, y_fit)
 
-print("Training Linear SVM (class_weight='balanced')...")
-model = LinearSVC(class_weight='balanced', random_state=42, dual=False)
-model.fit(X, y)
+    print(f"Fitting Platt-scaling calibrator on {len(X_cal)} held-out emails...")
+    calibrator = LogisticRegression()
+    calibrator.fit(model.decision_function(vec.transform(X_cal)).reshape(-1, 1), y_cal)
 
-config.MODELS_DIR.mkdir(exist_ok=True)
-joblib.dump(model, config.MODEL_PATH)
-joblib.dump(vectorizer, config.VECTORIZER_PATH)
-print(f"Done. Saved to {config.MODEL_PATH} and {config.VECTORIZER_PATH}.")
-print("Note: no confidence calibrator yet -- run retrain_feedback.py once feedback exists to generate one.")
+    config.MODELS_DIR.mkdir(exist_ok=True)
+    joblib.dump(model, config.MODEL_PATH)
+    joblib.dump(vec, config.VECTORIZER_PATH)
+    joblib.dump(calibrator, config.CALIBRATOR_PATH)
+    print(f"Saved to {config.MODELS_DIR}/")
+
+
+if __name__ == "__main__":
+    main()

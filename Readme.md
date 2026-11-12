@@ -1,117 +1,132 @@
+# 🛡️ Sentinel-Spam — Hybrid Spam & Phishing Detection
 
-## 🛡️ Sentinel-Spam — Hybrid Anti-Fraud & Conversational AI System
+![tests](https://github.com/khadijafair/spam_detector/actions/workflows/tests.yml/badge.svg?branch=main)
 
-Sentinel-Spam is an end-to-end phishing and spam detection ecosystem. The project bridges the gap between classical machine learning and modern generative AI by combining an ultra-fast **Linear SVM classifier (TF-IDF)** with a local **Ollama LLM** for semantic verification, translation, and advanced conversational routing.
+Sentinel-Spam is an end-to-end spam and phishing detection system. It combines a fast **Linear SVM classifier (TF-IDF)** with a local **Ollama LLM** used for translation of non-English messages and arbitration of borderline cases. The same pipeline is exposed through a **FastAPI** service, a **Streamlit** dashboard and a **Telegram bot**, with a user-feedback loop that feeds periodic retraining.
 
----
+## 📈 Results (measured, reproducible)
 
-## 📌 Prerequisites
+All numbers below come from `python -m research.evaluate`, which writes [`reports/metrics.md`](reports/metrics.md) and `reports/metrics.json`.
 
-Before running this project, ensure you have the following installed on your machine:
+**Dataset:** 82,486 emails from 6 public corpora — CEAS_08, Enron, Ling, Nazario, Nigerian_Fraud, SpamAssassin (42,891 spam/phishing, 39,595 legitimate).
+**Protocol:** stratified 80/20 split (65,988 train / 16,498 held-out test), seed 42.
 
-*   **Python 3.9 to 3.11** (Recommended for ML library stability)
-*   **Git** (To clone the repository)
-*   **Ollama** (For running local LLMs. Download it from [ollama.com](https://ollama.com))
-*   *Optional:* A **Telegram Bot Token** (If you plan to deploy and test the Telegram bot interface)
+| Model | Accuracy | Precision | Recall | F1 | False-positive rate |
+|---|---|---|---|---|---|
+| Complement Naive Bayes | 97.26% | 99.09% | 95.61% | 97.32% | 0.95% |
+| Logistic Regression (balanced) | 98.62% | 98.64% | 98.72% | 98.68% | 1.48% |
+| **Linear SVM (balanced)** — selected | **99.13%** | **99.15%** | **99.18%** | **99.17%** | **0.92%** |
 
----
+- Linear SVM confusion matrix on the 16,498 test emails: 73 false positives, 70 missed spams.
+- **Inference latency:** median **1.3 ms** per message (p95 6.2 ms) for cleaning + TF-IDF + SVM + calibrated confidence on one CPU core, without the LLM call.
 
-## ⚡ Quick Start (Run the Project in 5 Minutes)
+**Generalization limit (honest view).** When the model is trained on 5 corpora and tested on the 6th, unseen one, accuracy ranges from **53% (Nazario)** to **99% (Nigerian_Fraud)**, and is 81–91% on the other four. The random-split score above is therefore the optimistic case: emails from a source the model has never seen are much harder. This is the main motivation for the LLM arbitration on borderline scores and for the feedback/retraining loop.
 
-### 1. Clone & Prepare Environment
-Open your terminal and run the following commands to clone the project and configure a virtual environment:
+## 🗺️ How it works
+
+```text
+📥 Input text (any language)
+       │
+       ▼
+ [ Language detection ] ──► non-English? ──► [ Ollama translation → English ]
+       │                                                │
+       ▼ ◄──────────────────────────────────────────────┘
+ [ Cleaning: URL / email / money / phone / number tokens + Porter stemming ]
+       │
+       ▼
+ [ TF-IDF (1-2 grams, 50k features) → Linear SVM ] ──► raw margin score
+       │
+       ▼
+ [ Platt-scaling calibrator ] ──► confidence %
+       │
+       ▼
+ Borderline (≤ 65%)? ── yes ──► [ Ollama secondary check ] (Telegram bot)
+       │
+       ▼
+ 🚨 / ✅ Verdict + most influential words (TF-IDF weight × SVM coefficient)
+```
+
+- **One shared pipeline** (`core/spam_utils.py`): API, dashboard, bot and training scripts use the same cleaning and vectorization code, so predictions are identical everywhere.
+- **Explainability:** each verdict lists the words that pushed it, computed as TF-IDF weight × SVM coefficient.
+- **Calibrated confidence:** a Platt-scaling model maps the SVM margin to a probability, fitted on a 15% held-out split.
+- **Feedback loop:** user corrections are appended to `data/feedback.jsonl`; `retrain_feedback.py` re-tunes `C` by 5-fold grid search, refits the calibrator, compares old vs new model on a test split and backs up previous models before overwriting.
+
+## ⚡ Quick start
+
+Requires **Python 3.10+**. Ollama is only needed for translation / LLM arbitration; the classifier works without it.
 
 ```bash
-# Clone the repository
-git clone [https://github.com/khadijafair/spam_detector.git](https://github.com/khadijafair/spam_detector.git)
+git clone https://github.com/khadijafair/spam_detector.git
 cd spam_detector
-
-# Create a virtual environment
 python -m venv .venv
-
-# Activate the virtual environment
-# On macOS/Linux:
-source .venv/bin/activate  
-# On Windows (Command Prompt):
-.\.venv\Scripts\activate.bat
-# On Windows (PowerShell):
-.\.venv\Scripts\activate.ps1
-
-# Install all required project dependencies
-pip install --upgrade pip
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-2. Launch local AI Core (Ollama)Make sure the Ollama application is running on your computer, then pull the required model from your terminal:Bashollama pull llama3.2:3b
-3. Setup Environment VariablesCopy the example environment template to create your live configuration file:Bash# On macOS/Linux:
-cp .env.example .env
+cp .env.example .env               # Windows: copy .env.example .env
+```
 
-# On Windows (Command Prompt):
-copy .env.example .env
-Open the newly created .env file in your text editor and add your configuration details:Extrait de codeTELEGRAM_TOKEN="your_bot_token_from_botfather"
-OLLAMA_MODEL="llama3.2:3b"
-4. Choose Your Interface & RunSentinel-Spam offers three different ways to interact with the system. You can run any (or all) of them simultaneously:Option A: Web Dashboard (Streamlit) — Best for manual testing and data analyticsBashstreamlit run detector_app_interface.py
-Option B: Microservice API (FastAPI) — Best for integrating into other appsBashuvicorn app:app --reload
-Once running, view interactive API documentation at: http://127.0.0.1:8000/docsOption C: Telegram Bot — Best for live conversational text classificationBashpython telegram_bot.py
+The trained model (`models/*.pkl`, ~2.4 MB) is included, so the interfaces run directly:
 
-🗺️ Project Evolution FrameworkThis repository documents a complete 4-phase production-grade MLOps engineering pipeline:
+```bash
+uvicorn api:app --reload           # REST API → http://127.0.0.1:8000/docs
+streamlit run streamlit_app.py     # web dashboard
+python telegram_bot.py             # Telegram bot (needs TELEGRAM_TOKEN in .env)
+```
 
-┌─────────────────────────────┐      ┌─────────────────────────────┐
-│  Phase 1: Benchmarking      │ ───► │  Phase 2: Core Engineering  │
-│  • Checked raw distributions│      │  • Unified cleaning utils  │
-│  • SVM won (98.56% F1)      │      │  • Fit custom TF-IDF matrix │
-└─────────────────────────────┘      └─────────────────────────────┘
-                                                    │
-                                                    ▼
-┌─────────────────────────────┐      ┌─────────────────────────────┐
-│  Phase 4: Continuous MLOps  │ ◄─── │  Phase 3: The Hybrid Shift  │
-│  • Log active feedback loop │      │  • Multilingual Ollama route│
-│  • On-the-fly retraining    │      │  • Streamlit, API, & Bot UI │
-└─────────────────────────────┘      └─────────────────────────────┘
+Optional, for translation and arbitration: install [Ollama](https://ollama.com) and run `ollama pull llama3.2:3b`.
 
-Phase 1: Exploration & Model Benchmarking: Initial dataset exploration (inspect_dataset.py) led to a model tournament (benchmark_models.py). Linear SVM was selected as our primary core engine due to its exceptional F1-Score (98.56%) and sub-millisecond inference speeds.Phase 2: Core Engineering & Extraction: Built a deterministic text processing pipeline (spam_utils.py) that strips HTML/regex noise, cleans text strings, and applies Porter Stemming before applying a custom-tuned TF-IDF matrix.Phase 3: The Hybrid Shift: Introduced automatic language detection (langdetect). Non-English inputs are seamlessly translated via Ollama before classification. Furthermore, Ollama acts as an automated "human-like judge" if the SVM's prediction confidence lands inside a borderline 50% ambiguity zone.Phase 4: Continuous MLOps Loop: Real-time user corrections are logged to an append-only file (feedback.jsonl). Running retrain_from_feedback.py automatically initiates grid search tuning, recalculates Platt scaling coefficients, and updates weights safely.🏗️ Routing Logic ArchitectureThe flow diagram below displays how user inputs are safely evaluated across multilingual boundaries:
+Example API call:
 
-Plaintext 📥 Input Text (Any Language)
-       │
-       ▼
- [ Language Detection ] ──► Non-English? ──► [ Ollama Translation ➔ English ]
-       │                                                    │
-       ▼ ◄──────────────────────────────────────────────────┘
- [ Linear SVM Classifier ] ──► Raw Margin Score
-       │
-       ▼
- [ Confidence Calibrator ] ──► Calibrated Confidence % (Platt Scaling)
-       │
-       ▼
- ┌───────────────────────────────┐
- │ Score Borderline (~50% Zone)? │ ──► YES ──► [ Ollama Secondary Arbitration ]
- └───────────────────────────────┘                    │
-       │ NO                                           ▼
-       ▼ ◄────────────────────────────────────────────┘
- 🚨/✅ Final Verdict + Key Influential Words (Explainability Matrix)
+```bash
+curl -X POST http://127.0.0.1:8000/predict -H "Content-Type: application/json" \
+     -d '{"text": "URGENT: your account is suspended, verify your password at http://secure-login-update.com"}'
+```
 
+With Docker (Streamlit dashboard on port 8501):
 
-🎨 Key System FeaturesZero Logic Drift (spam_utils.py): The cleaning, tokenization, and vectorization process is entirely centralized. Every interface uses identical code blocks to guarantee matching predictions across all platforms.Explainable ML Core: Shows users why text was classified a certain way. The system extracts feature weights by computing the impact vector: $\text{Weight} = \text{TF-IDF Score} \times \text{SVM Coefficient}$.Calibrated Probabilities: Instead of using crude sigmoid functions, a Platt-scaling model maps raw hyper-plane mathematical distances to accurate, reliable real-world percentages.Automated Retraining Orchestrator: Instantly fine-tunes regularizations ($C$), recalculates calibration matrices, and structures date-stamped file backups when processing updated human feedback arrays.
+```bash
+docker build -t sentinel-spam .
+docker run -p 8501:8501 sentinel-spam
+```
 
-📁 Repository StructurePlaintextspam_detector
+## 📊 Dataset & reproducing the results
+
+The 6 corpora are the public *Phishing Email Dataset* (Kaggle, CC BY-SA 4.0; also mirrored at [rokibulroni/Phishing-Email-Dataset](https://github.com/rokibulroni/Phishing-Email-Dataset)). They are not versioned here because of their size (~150 MB).
+
+```bash
+# 1. put CEAS_08.csv, Enron.csv, Ling.csv, Nazario.csv, Nigerian_Fraud.csv, SpamAssasin.csv in data/dataset/
+python -m research.evaluate        # benchmark + latency + leave-one-corpus-out → reports/
+python -m research.train_model     # retrain the production model on the full dataset
+python -m pytest -q tests          # 8 tests: cleaning pipeline + API endpoints
+```
+
+`research/benchmark_models.py` is the original exploration script (20k-email sample, non-stratified split). On that protocol the Linear SVM scores 98.31% F1.
+
+## 📁 Repository structure
+
+```text
+spam_detector
 ├─ core/
-│  ├─ config.py                 # Safe environment configuration loader
-│  ├─ i18n.py                   # Multi-language dictionary engine (EN/FR)
-│  └─ spam_utils.py             # Global NLP preprocessing & explainability utils
-├─ research/                    
-│  ├─ train_model.py           # Legacy historical ingestion scripts
-│  ├─ benchmark_models.py      # Classifier comparison tournament runner
-│  └─ inspect_dataset.py       # Basic dataset metrics & vocabulary balance
-├─ data/
-├─ models/                      # Saved Model Binaries
-│  ├─ best_spam_model.pkl       # Serialized SVM weight matrices
-│  ├─ confidence_calibrator.pkl # Saved Platt-scaling coefficients
-│  └─ tfidf_vectorizer.pkl      # Serialized TF-IDF feature vocabulary
-├─ api.py                       # FastAPI Production Endpoint Engine
-├─ streamli_app.py              # Streamlit Interactive Web Application
-├─ telegram_bot.py              # Asynchronous Telegram Gateway Interface
-├─ retrain_feedback.py          # Continuous learning MLOps worker script
-├─ Dockerfile                   # Containerization configuration manifest
-└─ requirements.txt             # Project software dependencies manifest
+│  ├─ config.py              # paths and settings, loaded from .env
+│  ├─ i18n.py                # bot messages (EN/FR)
+│  └─ spam_utils.py          # shared cleaning, prediction, calibration, explainability
+├─ research/
+│  ├─ evaluate.py            # reproducible evaluation → reports/metrics.{md,json}
+│  ├─ train_model.py         # trains the production SVM + vectorizer + calibrator
+│  ├─ benchmark_models.py    # original model comparison (exploration)
+│  └─ inspect_dataset.py     # lists the columns of each corpus
+├─ models/                   # trained artifacts (SVM, TF-IDF, calibrator)
+├─ reports/                  # generated evaluation report
+├─ tests/                    # pytest suite (pipeline + API)
+├─ api.py                    # FastAPI service
+├─ streamlit_app.py          # Streamlit dashboard
+├─ telegram_bot.py           # Telegram bot
+├─ retrain_feedback.py       # retraining from user feedback
+├─ Dockerfile
+└─ requirements.txt
+```
 
-📈 Baseline Model PerformanceDuring our initial model selection phase, the foundational Linear SVM model delivered the following metrics against our evaluation baseline data matrix:MetricScorePerformance TrajectoryAccuracy98.50%High structural generalizationPrecision98.23%Exceptionally low false-positive occurrencesRecall98.90%Comprehensive threat capture rateF1-Score98.56%Balanced precision-recall mathematical harmony💡 Design Architecture Note: The core SVM classifier explicitly initializes with class_weight='balanced'. This design choice artificially penalizes False Negatives, forcing the system to actively filter out subtle, malicious fraud schemes.
+## ⚠️ Known limitations
 
-
+- The classifier is trained on English emails; other languages rely on the Ollama translation step.
+- Performance drops on email sources that differ from the training corpora (see leave-one-corpus-out above).
+- The corpora date mostly from the 2000s; modern phishing styles (QR codes, SMS, short links) are under-represented.

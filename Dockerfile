@@ -10,11 +10,11 @@ COPY requirements.txt .
 # 4. Installer les bibliothèques Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 5. Copier tout le reste du projet (scripts, modèles .pkl)
+# 5. Copier tout le reste du projet (scripts + modèles .pkl versionnés dans models/)
 COPY . .
 
 # 6. Exposer le port par défaut de Streamlit
 EXPOSE 8501
 
 # 7. Lancer l'application au démarrage du conteneur
-CMD ["streamlit", "run", "interface.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
