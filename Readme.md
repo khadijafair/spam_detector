@@ -2,6 +2,8 @@
 
 ![tests](https://github.com/khadijafair/spam_detector/actions/workflows/tests.yml/badge.svg?branch=main)
 
+**▶ Live demo: [sentinel-spam-khadija.streamlit.app](https://sentinel-spam-khadija.streamlit.app/)** (English text, SVM classifier with explanations)
+
 Sentinel-Spam is an end-to-end spam and phishing detection system. It combines a fast **Linear SVM classifier (TF-IDF)** with a local **Ollama LLM** used for translation of non-English messages and arbitration of borderline cases. The same pipeline is exposed through a **FastAPI** service, a **Streamlit** dashboard and a **Telegram bot**, with a user-feedback loop that feeds periodic retraining. Experiments and models are tracked in **MLflow** and input drift is monitored with **Evidently**.
 
 ## 📈 Results (measured, reproducible)
