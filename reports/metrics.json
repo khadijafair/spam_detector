@@ -67,13 +67,13 @@
         "fn": 70,
         "tp": 8509
       },
-      "train_seconds": 17.0
+      "train_seconds": 16.0
     }
   },
   "latency_ms_per_message": {
     "messages": 1000,
-    "median": 1.31,
-    "p95": 6.21,
+    "median": 1.29,
+    "p95": 5.88,
     "note": "single-threaded CPU, cleaning + TF-IDF + SVM + confidence, no LLM call"
   },
   "leave_one_corpus_out": {
@@ -168,5 +168,5 @@
       "only_one_class": false
     }
   },
-  "runtime_seconds": 458.8
+  "runtime_seconds": 304.2
 }

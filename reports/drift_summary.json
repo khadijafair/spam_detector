@@ -1,0 +1,96 @@
+{
+  "stable": {
+    "reference_messages": 3000,
+    "current_messages": 3000,
+    "columns": {
+      "n_tokens": {
+        "method": "Wasserstein distance (normed)",
+        "value": 0.045
+      },
+      "urltoken_count": {
+        "method": "Wasserstein distance (normed)",
+        "value": 0.0511
+      },
+      "moneytoken_count": {
+        "method": "Wasserstein distance (normed)",
+        "value": 0.0465
+      },
+      "phonetoken_count": {
+        "method": "Wasserstein distance (normed)",
+        "value": 0.0448
+      },
+      "numbertoken_count": {
+        "method": "Wasserstein distance (normed)",
+        "value": 0.1135
+      },
+      "emailtoken_count": {
+        "method": "Wasserstein distance (normed)",
+        "value": 0.0865
+      },
+      "svm_score": {
+        "method": "Wasserstein distance (normed)",
+        "value": 0.026
+      },
+      "predicted_spam": {
+        "method": "Jensen-Shannon distance",
+        "value": 0.0042
+      },
+      "text": {
+        "method": "Absolute text content drift",
+        "value": 0.4986
+      }
+    },
+    "drifted_columns": 1,
+    "drifted_share": 0.111,
+    "dataset_drift": false,
+    "predicted_spam_rate_reference": 50.4,
+    "predicted_spam_rate_current": 51.0
+  },
+  "new_source": {
+    "reference_messages": 3000,
+    "current_messages": 1565,
+    "columns": {
+      "n_tokens": {
+        "method": "Wasserstein distance (normed)",
+        "value": 1.0061
+      },
+      "urltoken_count": {
+        "method": "Wasserstein distance (normed)",
+        "value": 0.2196
+      },
+      "moneytoken_count": {
+        "method": "Wasserstein distance (normed)",
+        "value": 0.0595
+      },
+      "phonetoken_count": {
+        "method": "Wasserstein distance (normed)",
+        "value": 1.1306
+      },
+      "numbertoken_count": {
+        "method": "Wasserstein distance (normed)",
+        "value": 0.5259
+      },
+      "emailtoken_count": {
+        "method": "Wasserstein distance (normed)",
+        "value": 17.5012
+      },
+      "svm_score": {
+        "method": "Wasserstein distance (normed)",
+        "value": 0.8654
+      },
+      "predicted_spam": {
+        "method": "Jensen-Shannon distance",
+        "value": 0.4489
+      },
+      "text": {
+        "method": "Absolute text content drift",
+        "value": 0.9855
+      }
+    },
+    "drifted_columns": 8,
+    "drifted_share": 0.889,
+    "dataset_drift": true,
+    "predicted_spam_rate_reference": 50.4,
+    "predicted_spam_rate_current": 99.6
+  }
+}

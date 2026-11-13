@@ -2,7 +2,7 @@
 
 ![tests](https://github.com/khadijafair/spam_detector/actions/workflows/tests.yml/badge.svg?branch=main)
 
-Sentinel-Spam is an end-to-end spam and phishing detection system. It combines a fast **Linear SVM classifier (TF-IDF)** with a local **Ollama LLM** used for translation of non-English messages and arbitration of borderline cases. The same pipeline is exposed through a **FastAPI** service, a **Streamlit** dashboard and a **Telegram bot**, with a user-feedback loop that feeds periodic retraining.
+Sentinel-Spam is an end-to-end spam and phishing detection system. It combines a fast **Linear SVM classifier (TF-IDF)** with a local **Ollama LLM** used for translation of non-English messages and arbitration of borderline cases. The same pipeline is exposed through a **FastAPI** service, a **Streamlit** dashboard and a **Telegram bot**, with a user-feedback loop that feeds periodic retraining. Experiments and models are tracked in **MLflow** and input drift is monitored with **Evidently**.
 
 ## 📈 Results (measured, reproducible)
 
@@ -18,9 +18,32 @@ All numbers below come from `python -m research.evaluate`, which writes [`report
 | **Linear SVM (balanced)** — selected | **99.13%** | **99.15%** | **99.18%** | **99.17%** | **0.92%** |
 
 - Linear SVM confusion matrix on the 16,498 test emails: 73 false positives, 70 missed spams.
-- **Inference latency:** median **1.3 ms** per message (p95 6.2 ms) for cleaning + TF-IDF + SVM + calibrated confidence on one CPU core, without the LLM call.
+- **Inference latency:** median **1.3 ms** per message (p95 5.9 ms) for cleaning + TF-IDF + SVM + calibrated confidence on one CPU core, without the LLM call.
 
 **Generalization limit (honest view).** When the model is trained on 5 corpora and tested on the 6th, unseen one, accuracy ranges from **53% (Nazario)** to **99% (Nigerian_Fraud)**, and is 81–91% on the other four. The random-split score above is therefore the optimistic case: emails from a source the model has never seen are much harder. This is the main motivation for the LLM arbitration on borderline scores and for the feedback/retraining loop.
+
+## 🔁 MLOps: experiment tracking, model registry, drift monitoring
+
+**MLflow.** Every script logs to MLflow (`core/tracking.py`; local SQLite store by default, or `MLFLOW_TRACKING_URI`):
+- `research.evaluate` — one parent run with dataset parameters, latency and leave-one-corpus-out metrics, plus one nested run per benchmarked model.
+- `research.train_model` — parameters, held-out metrics (the 12,373-email calibration split the SVM never sees: **F1 99.18%, false-positive rate 0.91%**), and registration of the TF-IDF + SVM pipeline in the **Model Registry** as `sentinel-spam-svm` with the alias `champion`.
+- `retrain_feedback.py` — number of user corrections, tuned `C`, F1 before/after retraining.
+- `monitoring.drift_report` — drift results and the Evidently HTML reports as artifacts.
+
+```bash
+mlflow ui --backend-store-uri sqlite:///mlflow.db       # browse runs and registered models
+python -c "import mlflow; mlflow.set_tracking_uri('sqlite:///mlflow.db'); \
+  print(mlflow.sklearn.load_model('models:/sentinel-spam-svm@champion'))"
+```
+
+**Evidently drift monitoring** (`monitoring/drift_report.py`). Compares a window of incoming messages with a 3,000-email reference sample on 9 columns: the text itself, message length, URL / money / phone / number / email token counts, the SVM score and the predicted-spam flag. No labels are needed, so it can run on production traffic (`--current data/feedback.jsonl`). Reproducible demo with `--demo` ([`reports/drift_summary.md`](reports/drift_summary.md)):
+
+| Scenario | Current window | Drifted columns | Alert | Predicted spam rate |
+|---|---|---|---|---|
+| Same corpora, new random sample | 3,000 emails | 1 / 9 | no | 50.4% → 51.0% |
+| Unseen phishing corpus (Nazario) | 1,565 emails | 8 / 9 | **yes** | 50.4% → 99.6% |
+
+The monitor stays quiet on data like the training set and raises an alert when the traffic changes source — the situation where the leave-one-corpus-out results show the model is least reliable.
 
 ## 🗺️ How it works
 
@@ -95,8 +118,9 @@ The 6 corpora are the public *Phishing Email Dataset* (Kaggle, CC BY-SA 4.0; als
 ```bash
 # 1. put CEAS_08.csv, Enron.csv, Ling.csv, Nazario.csv, Nigerian_Fraud.csv, SpamAssasin.csv in data/dataset/
 python -m research.evaluate        # benchmark + latency + leave-one-corpus-out → reports/
-python -m research.train_model     # retrain the production model on the full dataset
-python -m pytest -q tests          # 8 tests: cleaning pipeline + API endpoints
+python -m research.train_model     # retrain the production model on the full dataset (+ MLflow registry)
+python -m monitoring.drift_report --demo   # Evidently drift reports → reports/
+python -m pytest -q tests          # 9 tests: cleaning pipeline, API endpoints, drift features
 ```
 
 `research/benchmark_models.py` is the original exploration script (20k-email sample, non-stratified split). On that protocol the Linear SVM scores 98.31% F1.
@@ -108,14 +132,17 @@ spam_detector
 ├─ core/
 │  ├─ config.py              # paths and settings, loaded from .env
 │  ├─ i18n.py                # bot messages (EN/FR)
+│  ├─ tracking.py            # MLflow setup (tracking store, experiment, registry name)
 │  └─ spam_utils.py          # shared cleaning, prediction, calibration, explainability
 ├─ research/
 │  ├─ evaluate.py            # reproducible evaluation → reports/metrics.{md,json}
 │  ├─ train_model.py         # trains the production SVM + vectorizer + calibrator
 │  ├─ benchmark_models.py    # original model comparison (exploration)
 │  └─ inspect_dataset.py     # lists the columns of each corpus
+├─ monitoring/
+│  └─ drift_report.py        # Evidently data-drift monitoring
 ├─ models/                   # trained artifacts (SVM, TF-IDF, calibrator)
-├─ reports/                  # generated evaluation report
+├─ reports/                  # generated evaluation and drift reports
 ├─ tests/                    # pytest suite (pipeline + API)
 ├─ api.py                    # FastAPI service
 ├─ streamlit_app.py          # Streamlit dashboard

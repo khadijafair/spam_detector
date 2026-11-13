@@ -11,7 +11,8 @@ Every number quoted in the README comes from this script. It:
   5. Runs a leave-one-corpus-out test: train on 5 corpora, test on the 6th,
      to show how the model behaves on emails from an unseen source.
 
-Writes reports/metrics.json and reports/metrics.md.
+Writes reports/metrics.json and reports/metrics.md, and logs everything to
+MLflow (one parent run, one nested run per model; see core/tracking.py).
 
 Usage (from the project root):
     python -m research.evaluate
@@ -20,6 +21,7 @@ import json
 import time
 from pathlib import Path
 
+import mlflow
 import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -31,6 +33,7 @@ from sklearn.naive_bayes import ComplementNB
 from sklearn.svm import LinearSVC
 
 import core.config as config
+from core import tracking
 from core.spam_utils import clean_text_advanced, predict_with_confidence
 
 SEED = 42
@@ -91,7 +94,12 @@ def scores(y_true, y_pred) -> dict:
 
 
 def main():
-    t0 = time.time()
+    tracking.setup()
+    with mlflow.start_run(run_name="evaluate"):
+        run(time.time())
+
+
+def run(t0):
     df = load_master()
     report = {"dataset": {
         "corpora": sorted(df["source"].unique().tolist()),
@@ -110,6 +118,8 @@ def main():
     Xtr = vec.fit_transform(X_tr)
     Xte = vec.transform(X_te)
     report["split"] = {"train": int(len(X_tr)), "test": int(len(X_te)), "stratified": True, "seed": SEED}
+    mlflow.log_params({"dataset_emails": len(df), "corpora": ",".join(report["dataset"]["corpora"]),
+                       "test_size": 0.2, "seed": SEED, "tfidf_ngram_range": "(1, 2)", "tfidf_max_features": 50000})
 
     report["benchmark"] = {}
     svm = None
@@ -118,6 +128,9 @@ def main():
         m.fit(Xtr, y_tr)
         fit_s = time.time() - t
         report["benchmark"][name] = {**scores(y_te, m.predict(Xte)), "train_seconds": round(fit_s, 1)}
+        with mlflow.start_run(run_name=name, nested=True):
+            mlflow.log_params({"model": type(m).__name__, **{k: str(v) for k, v in m.get_params().items()}})
+            tracking.log_scores(report["benchmark"][name])
         print(name, report["benchmark"][name])
         if "SVM" in name:
             svm = m
@@ -141,6 +154,9 @@ def main():
         "note": "single-threaded CPU, cleaning + TF-IDF + SVM + confidence, no LLM call",
     }
     print("Latency:", report["latency_ms_per_message"])
+    tracking.log_scores(report["benchmark"]["Linear SVM (balanced)"], prefix="svm_")
+    mlflow.log_metric("latency_median_ms", report["latency_ms_per_message"]["median"])
+    mlflow.log_metric("latency_p95_ms", report["latency_ms_per_message"]["p95"])
 
     # ---- 3. Leave-one-corpus-out ------------------------------------------
     report["leave_one_corpus_out"] = {}
@@ -154,12 +170,16 @@ def main():
         res["emails"] = int(len(test))
         res["only_one_class"] = bool(test["label_num"].nunique() == 1)
         report["leave_one_corpus_out"][src] = res
+        mlflow.log_metric(f"loco_{src}_accuracy", res["accuracy"])
+        mlflow.log_metric(f"loco_{src}_f1", res["f1"])
         print("LOCO", src, res["accuracy"], res["f1"])
 
     report["runtime_seconds"] = round(time.time() - t0, 1)
     REPORTS_DIR.mkdir(exist_ok=True)
     (REPORTS_DIR / "metrics.json").write_text(json.dumps(report, indent=2))
     (REPORTS_DIR / "metrics.md").write_text(to_markdown(report))
+    mlflow.log_artifact(str(REPORTS_DIR / "metrics.json"))
+    mlflow.log_artifact(str(REPORTS_DIR / "metrics.md"))
     print(f"\nWritten to {REPORTS_DIR}/metrics.json and metrics.md")
 
 

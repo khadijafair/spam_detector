@@ -11,4 +11,6 @@ langdetect
 requests
 httpx
 tabulate
+mlflow
+evidently
 pytest

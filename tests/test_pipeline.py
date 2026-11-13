@@ -69,3 +69,15 @@ def test_predict_accepts_legit_email(client):
 
 def test_predict_rejects_empty_text(client):
     assert client.post("/predict", json={"text": ""}).status_code == 422
+
+
+def test_drift_features_columns():
+    if not HAS_MODELS:
+        pytest.skip("models/ not trained")
+    import pandas as pd
+    from monitoring.drift_report import NUMERIC, features
+    texts = pd.Series(["win moneytoken now click urltoken", "meet tomorrow at numbertoken"])
+    df = features(texts)
+    assert list(df.columns) == ["text", *NUMERIC]
+    assert df.loc[0, "urltoken_count"] == 1 and df.loc[1, "numbertoken_count"] == 1
+    assert set(df["predicted_spam"]) <= {0, 1}

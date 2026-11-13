@@ -10,13 +10,13 @@
 |---|---|---|---|---|---|---|
 | Complement Naive Bayes | 97.26% | 99.09% | 95.61% | 97.32% | 0.95% | 0.0 s |
 | Logistic Regression (balanced) | 98.62% | 98.64% | 98.72% | 98.68% | 1.48% | 1.2 s |
-| Linear SVM (balanced) | 99.13% | 99.15% | 99.18% | 99.17% | 0.92% | 17.0 s |
+| Linear SVM (balanced) | 99.13% | 99.15% | 99.18% | 99.17% | 0.92% | 16.0 s |
 
 Linear SVM confusion matrix: TN=7,846 · FP=73 · FN=70 · TP=8,509
 
 ## Inference latency
 
-Median **1.31 ms**, p95 6.21 ms per message over 1000 messages (single-threaded CPU, cleaning + TF-IDF + SVM + confidence, no LLM call).
+Median **1.29 ms**, p95 5.88 ms per message over 1000 messages (single-threaded CPU, cleaning + TF-IDF + SVM + confidence, no LLM call).
 
 ## Leave-one-corpus-out (train on 5 corpora, test on the unseen 6th)
 
