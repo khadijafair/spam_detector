@@ -12,8 +12,9 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.svm import LinearSVC
 
 stemmer = PorterStemmer()
-FICHIER_CACHE = 'dataset_master_clean.csv'
-dossier_dataset = 'dataset'
+import core.config as config
+FICHIER_CACHE = config.DATASET_MASTER_PATH
+dossier_dataset = config.RAW_DATASET_DIR
 
 def clean_label(val):
     val = str(val).lower().strip()

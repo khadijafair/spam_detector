@@ -2,11 +2,23 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Fichiers de configuration sensibles
 .env
 
-# Modèles et Données Lourdes
-*.pkl
+# Données lourdes (voir README > Dataset)
 *.csv
 *.jsonl
+
+# Modèles : seuls les 3 artefacts de production sont versionnés (~2.4 Mo)
+*.pkl
+!models/best_spam_model.pkl
+!models/tfidf_vectorizer.pkl
+!models/confidence_calibrator.pkl
+models/model_backups/
+
+# MLflow (local tracking store) et rapports HTML Evidently (~4 Mo chacun, régénérables)
+mlflow.db
+mlruns/
+reports/drift_*.html

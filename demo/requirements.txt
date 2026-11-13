@@ -1,0 +1,9 @@
+# Light requirements for the hosted demo (Streamlit Community Cloud)
+streamlit==1.67.0
+pandas==3.0.5
+scikit-learn==1.9.1
+joblib==1.6.0
+nltk==3.10.4
+langdetect==1.0.9
+requests==2.34.2
+python-dotenv==1.2.3

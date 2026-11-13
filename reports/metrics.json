@@ -1,0 +1,172 @@
+{
+  "dataset": {
+    "corpora": [
+      "CEAS_08",
+      "Enron",
+      "Ling",
+      "Nazario",
+      "Nigerian_Fraud",
+      "SpamAssasin"
+    ],
+    "emails_after_dedup": 82486,
+    "spam_or_phishing": 42891,
+    "legitimate": 39595,
+    "per_corpus": {
+      "CEAS_08": 39154,
+      "Enron": 29767,
+      "Ling": 2859,
+      "Nazario": 1565,
+      "Nigerian_Fraud": 3332,
+      "SpamAssasin": 5809
+    }
+  },
+  "split": {
+    "train": 65988,
+    "test": 16498,
+    "stratified": true,
+    "seed": 42
+  },
+  "benchmark": {
+    "Complement Naive Bayes": {
+      "accuracy": 97.26,
+      "precision": 99.09,
+      "recall": 95.61,
+      "f1": 97.32,
+      "false_positive_rate": 0.95,
+      "confusion_matrix": {
+        "tn": 7844,
+        "fp": 75,
+        "fn": 377,
+        "tp": 8202
+      },
+      "train_seconds": 0.0
+    },
+    "Logistic Regression (balanced)": {
+      "accuracy": 98.62,
+      "precision": 98.64,
+      "recall": 98.72,
+      "f1": 98.68,
+      "false_positive_rate": 1.48,
+      "confusion_matrix": {
+        "tn": 7802,
+        "fp": 117,
+        "fn": 110,
+        "tp": 8469
+      },
+      "train_seconds": 1.2
+    },
+    "Linear SVM (balanced)": {
+      "accuracy": 99.13,
+      "precision": 99.15,
+      "recall": 99.18,
+      "f1": 99.17,
+      "false_positive_rate": 0.92,
+      "confusion_matrix": {
+        "tn": 7846,
+        "fp": 73,
+        "fn": 70,
+        "tp": 8509
+      },
+      "train_seconds": 16.0
+    }
+  },
+  "latency_ms_per_message": {
+    "messages": 1000,
+    "median": 1.29,
+    "p95": 5.88,
+    "note": "single-threaded CPU, cleaning + TF-IDF + SVM + confidence, no LLM call"
+  },
+  "leave_one_corpus_out": {
+    "CEAS_08": {
+      "accuracy": 83.2,
+      "precision": 90.41,
+      "recall": 78.19,
+      "f1": 83.86,
+      "false_positive_rate": 10.47,
+      "confusion_matrix": {
+        "tn": 15500,
+        "fp": 1812,
+        "fn": 4764,
+        "tp": 17078
+      },
+      "emails": 39154,
+      "only_one_class": false
+    },
+    "Enron": {
+      "accuracy": 80.97,
+      "precision": 75.64,
+      "recall": 87.71,
+      "f1": 81.23,
+      "false_positive_rate": 25.01,
+      "confusion_matrix": {
+        "tn": 11842,
+        "fp": 3949,
+        "fn": 1717,
+        "tp": 12259
+      },
+      "emails": 29767,
+      "only_one_class": false
+    },
+    "Ling": {
+      "accuracy": 90.66,
+      "precision": 64.71,
+      "recall": 91.7,
+      "f1": 75.88,
+      "false_positive_rate": 9.54,
+      "confusion_matrix": {
+        "tn": 2172,
+        "fp": 229,
+        "fn": 38,
+        "tp": 420
+      },
+      "emails": 2859,
+      "only_one_class": false
+    },
+    "Nazario": {
+      "accuracy": 53.23,
+      "precision": 100.0,
+      "recall": 53.23,
+      "f1": 69.47,
+      "false_positive_rate": null,
+      "confusion_matrix": {
+        "tn": 0,
+        "fp": 0,
+        "fn": 732,
+        "tp": 833
+      },
+      "emails": 1565,
+      "only_one_class": true
+    },
+    "Nigerian_Fraud": {
+      "accuracy": 99.01,
+      "precision": 100.0,
+      "recall": 99.01,
+      "f1": 99.5,
+      "false_positive_rate": null,
+      "confusion_matrix": {
+        "tn": 0,
+        "fp": 0,
+        "fn": 33,
+        "tp": 3299
+      },
+      "emails": 3332,
+      "only_one_class": true
+    },
+    "SpamAssasin": {
+      "accuracy": 90.88,
+      "precision": 79.94,
+      "recall": 92.32,
+      "f1": 85.68,
+      "false_positive_rate": 9.73,
+      "confusion_matrix": {
+        "tn": 3693,
+        "fp": 398,
+        "fn": 132,
+        "tp": 1586
+      },
+      "emails": 5809,
+      "only_one_class": false
+    }
+  },
+  "runtime_seconds": 304.2
+}

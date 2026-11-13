@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 import joblib
+import mlflow
 import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -30,6 +31,7 @@ from sklearn.metrics import classification_report, f1_score
 
 import core.config as config
 from core.spam_utils import clean_text_advanced
+from core import tracking
 
 TEXT_COL_CANDIDATES = ["clean_text", "text", "message", "v2", "email", "content"]
 LABEL_COL_CANDIDATES = ["label_num", "label", "v1", "class", "category", "spam"]
@@ -81,6 +83,12 @@ def load_feedback_corrections(feedback_path: str) -> list[tuple[str, int]]:
 
 
 def main():
+    tracking.setup()
+    with mlflow.start_run(run_name="retrain_feedback"):
+        _main()
+
+
+def _main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dataset", default=str(config.DATASET_MASTER_PATH))
     parser.add_argument("--text-col", default=None)
@@ -172,6 +180,10 @@ def main():
     print(classification_report(test_labels, new_preds, target_names=["HAM", "SPAM"]))
 
     old_f1, new_f1 = f1_score(test_labels, old_preds), f1_score(test_labels, new_preds)
+    mlflow.log_params({"dataset": str(dataset_path), "corrections": len(corrections),
+                       "correction_oversample": CORRECTION_OVERSAMPLE, "C": new_model.C, "dry_run": args.dry_run})
+    mlflow.log_metrics({"f1_before": old_f1 * 100, "f1_after": new_f1 * 100,
+                        "test_emails": len(test_texts)})
     print(f"\nF1-score: {old_f1:.4f} -> {new_f1:.4f} ({'+' if new_f1 >= old_f1 else ''}{new_f1 - old_f1:.4f})")
 
     test_scores = new_model.decision_function(X_test)
