@@ -92,6 +92,7 @@ The trained model (`models/*.pkl`, ~2.4 MB) is included, so the interfaces run d
 ```bash
 uvicorn api:app --reload           # REST API → http://127.0.0.1:8000/docs
 streamlit run streamlit_app.py     # web dashboard
+streamlit run demo/streamlit_demo.py   # light public demo (no Ollama), deployable on Streamlit Community Cloud
 python telegram_bot.py             # Telegram bot (needs TELEGRAM_TOKEN in .env)
 ```
 
@@ -141,6 +142,7 @@ spam_detector
 │  └─ inspect_dataset.py     # lists the columns of each corpus
 ├─ monitoring/
 │  └─ drift_report.py        # Evidently data-drift monitoring
+├─ demo/                     # public demo (Streamlit Community Cloud) + its light requirements
 ├─ models/                   # trained artifacts (SVM, TF-IDF, calibrator)
 ├─ reports/                  # generated evaluation and drift reports
 ├─ tests/                    # pytest suite (pipeline + API)
